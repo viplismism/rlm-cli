@@ -1,0 +1,997 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RLM Dashboard</title>
+<style>
+/* ── Reset & Theme ─────────────────────────────────────────────────────── */
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+:root {
+  --bg:        #0d1117;
+  --bg-card:   #161b22;
+  --bg-input:  #0d1117;
+  --bg-hover:  #1c2129;
+  --border:    #30363d;
+  --text:      #e6edf3;
+  --text-dim:  #8b949e;
+  --accent:    #58a6ff;
+  --green:     #3fb950;
+  --yellow:    #d29922;
+  --red:       #f85149;
+  --magenta:   #bc8cff;
+  --cyan:      #79c0ff;
+  --mono: 'SF Mono', 'Cascadia Code', 'Fira Code', 'JetBrains Mono', Consolas, monospace;
+  --sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+}
+html, body { height: 100%; background: var(--bg); color: var(--text); font-family: var(--sans); font-size: 14px; }
+
+/* ── Layout ────────────────────────────────────────────────────────────── */
+#app { display: flex; flex-direction: column; height: 100vh; }
+
+header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 24px; border-bottom: 1px solid var(--border);
+  background: var(--bg-card); flex-shrink: 0;
+}
+header h1 { font-size: 18px; font-weight: 600; letter-spacing: -0.3px; }
+header h1 span { color: var(--accent); }
+#status {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--text-dim);
+}
+.status-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--green);
+}
+.status-dot.running {
+  background: var(--yellow);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+
+#layout { display: flex; flex: 1; overflow: hidden; }
+
+/* ── Sidebar ───────────────────────────────────────────────────────────── */
+#sidebar {
+  width: 280px; min-width: 280px; border-right: 1px solid var(--border);
+  background: var(--bg-card); display: flex; flex-direction: column;
+  overflow: hidden;
+}
+#sidebar h2 {
+  padding: 16px 16px 12px; font-size: 13px; font-weight: 600;
+  color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px;
+}
+#newQueryBtn {
+  margin: 0 12px 12px; padding: 10px 16px; border: 1px solid var(--accent);
+  border-radius: 6px; background: transparent; color: var(--accent);
+  font-size: 13px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+}
+#newQueryBtn:hover { background: var(--accent); color: var(--bg); }
+
+#trajectoryList {
+  flex: 1; overflow-y: auto; padding: 0 8px 12px;
+}
+.traj-item {
+  padding: 10px 12px; border-radius: 6px; cursor: pointer;
+  margin-bottom: 2px; transition: background 0.1s; border: 1px solid transparent;
+}
+.traj-item:hover { background: var(--bg-hover); }
+.traj-item.active { background: var(--bg-hover); border-color: var(--accent); }
+.traj-item .traj-date { font-size: 12px; color: var(--text-dim); font-family: var(--mono); }
+.traj-item .traj-query {
+  font-size: 13px; color: var(--text); margin-top: 3px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.traj-item .traj-meta {
+  font-size: 11px; color: var(--text-dim); margin-top: 3px;
+  display: flex; gap: 8px;
+}
+.traj-item .traj-empty { font-size: 11px; color: var(--red); }
+
+/* ── Main area ─────────────────────────────────────────────────────────── */
+#main { flex: 1; overflow-y: auto; padding: 24px 32px; }
+
+.panel { max-width: 900px; margin: 0 auto; }
+.panel + .panel { margin-top: 24px; }
+
+.panel-header {
+  font-size: 16px; font-weight: 600; margin-bottom: 16px;
+  display: flex; align-items: center; gap: 10px;
+}
+
+/* ── Form ──────────────────────────────────────────────────────────────── */
+.form-group { margin-bottom: 16px; }
+.form-group label {
+  display: block; font-size: 13px; font-weight: 500;
+  color: var(--text-dim); margin-bottom: 6px;
+}
+.form-group select, .form-group input[type="url"], .form-group textarea {
+  width: 100%; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: 6px; background: var(--bg-input); color: var(--text);
+  font-family: var(--mono); font-size: 13px; outline: none; transition: border 0.15s;
+}
+.form-group select:focus, .form-group input:focus, .form-group textarea:focus {
+  border-color: var(--accent);
+}
+.form-group textarea { resize: vertical; min-height: 60px; }
+.form-group input[type="file"] {
+  font-family: var(--sans); font-size: 13px; color: var(--text-dim);
+}
+
+/* Context tabs */
+.tab-bar { display: flex; gap: 4px; margin-bottom: 10px; }
+.tab-btn {
+  padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px;
+  background: transparent; color: var(--text-dim); font-size: 12px;
+  cursor: pointer; transition: all 0.15s; font-weight: 500;
+}
+.tab-btn.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+.context-info {
+  font-size: 12px; color: var(--text-dim); font-family: var(--mono);
+  margin-top: 6px;
+}
+
+/* Buttons */
+.btn-row { display: flex; gap: 10px; margin-top: 8px; }
+.btn {
+  padding: 10px 20px; border: none; border-radius: 6px;
+  font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s;
+}
+.btn-primary { background: var(--accent); color: var(--bg); }
+.btn-primary:hover { filter: brightness(1.15); }
+.btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-danger { background: var(--red); color: #fff; }
+.btn-danger:hover { filter: brightness(1.15); }
+.hidden { display: none !important; }
+
+/* ── Overview meta ─────────────────────────────────────────────────────── */
+.meta-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 12px; margin-bottom: 20px;
+}
+.meta-card {
+  padding: 12px 16px; background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.meta-card .meta-label { font-size: 11px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.5px; }
+.meta-card .meta-value { font-size: 15px; font-weight: 600; margin-top: 4px; font-family: var(--mono); }
+
+/* ── Timeline ──────────────────────────────────────────────────────────── */
+.timeline { margin-top: 8px; }
+.timeline-bar {
+  display: flex; gap: 4px; margin-bottom: 20px; padding: 8px;
+  background: var(--bg-card); border-radius: 8px; border: 1px solid var(--border);
+}
+.timeline-step {
+  flex: 1; height: 6px; border-radius: 3px; background: var(--border);
+  cursor: pointer; transition: all 0.15s;
+}
+.timeline-step.done { background: var(--accent); }
+.timeline-step.final { background: var(--green); }
+.timeline-step.active { box-shadow: 0 0 0 2px var(--accent); transform: scaleY(1.5); }
+.timeline-step:hover { filter: brightness(1.3); }
+
+/* ── Iteration card ────────────────────────────────────────────────────── */
+.iter-card {
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px; margin-bottom: 12px; overflow: hidden;
+}
+.iter-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 12px 16px; cursor: pointer; user-select: none;
+  transition: background 0.1s;
+}
+.iter-header:hover { background: var(--bg-hover); }
+.iter-header .iter-title {
+  font-weight: 600; font-size: 14px;
+  display: flex; align-items: center; gap: 8px;
+}
+.iter-header .iter-badges { display: flex; gap: 6px; align-items: center; }
+.badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 10px;
+  font-weight: 600; font-family: var(--mono);
+}
+.badge-blue { background: rgba(88,166,255,0.15); color: var(--accent); }
+.badge-green { background: rgba(63,185,80,0.15); color: var(--green); }
+.badge-yellow { background: rgba(210,153,34,0.15); color: var(--yellow); }
+.badge-magenta { background: rgba(188,140,255,0.15); color: var(--magenta); }
+.badge-red { background: rgba(248,81,73,0.15); color: var(--red); }
+
+.iter-body { padding: 0 16px 16px; }
+.iter-section { margin-top: 12px; }
+.iter-section-title {
+  font-size: 12px; font-weight: 600; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px;
+}
+
+/* Code block */
+.code-block {
+  background: #010409; border: 1px solid var(--border); border-radius: 6px;
+  padding: 12px 14px; overflow-x: auto; font-family: var(--mono);
+  font-size: 12.5px; line-height: 1.6; color: var(--text); white-space: pre;
+}
+.hl-keyword { color: var(--magenta); font-weight: 500; }
+.hl-builtin { color: var(--cyan); }
+.hl-string  { color: #a5d6ff; }
+.hl-comment { color: var(--text-dim); font-style: italic; }
+.hl-number  { color: var(--yellow); }
+.hl-rlm     { color: var(--green); font-weight: 700; }
+
+/* Output block */
+.output-block {
+  background: #010409; border: 1px solid var(--border); border-radius: 6px;
+  padding: 12px 14px; overflow-x: auto; font-family: var(--mono);
+  font-size: 12.5px; line-height: 1.5; color: var(--yellow); white-space: pre-wrap;
+  word-break: break-word; max-height: 300px; overflow-y: auto;
+}
+.output-block.stderr { color: var(--red); }
+
+/* LLM I/O blocks */
+.llm-io-block {
+  background: rgba(88,166,255,0.05); border: 1px solid rgba(88,166,255,0.2);
+  border-radius: 6px; padding: 12px 14px; margin-bottom: 8px;
+  font-family: var(--mono); font-size: 12px; line-height: 1.5;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 300px; overflow-y: auto; color: var(--text);
+}
+.llm-io-block.response {
+  background: rgba(63,185,80,0.05); border-color: rgba(63,185,80,0.2);
+}
+.llm-io-toggle {
+  font-size: 12px; color: var(--accent); cursor: pointer; margin-left: 8px;
+  user-select: none;
+}
+.llm-io-toggle:hover { text-decoration: underline; }
+
+/* Sub-query card */
+.sq-card {
+  background: rgba(188,140,255,0.05); border: 1px solid rgba(188,140,255,0.2);
+  border-radius: 6px; padding: 10px 14px; margin-bottom: 8px;
+}
+.sq-header { font-size: 13px; font-weight: 600; color: var(--magenta); margin-bottom: 6px; }
+.sq-field { font-size: 12px; margin-bottom: 4px; }
+.sq-field b { color: var(--text-dim); font-weight: 500; }
+.sq-content {
+  font-family: var(--mono); font-size: 12px; background: rgba(0,0,0,0.3);
+  padding: 8px 10px; border-radius: 4px; margin-top: 4px;
+  white-space: pre-wrap; word-break: break-word; max-height: 150px; overflow-y: auto;
+}
+
+/* Result panel */
+.result-box {
+  background: var(--bg-card); border: 2px solid var(--green);
+  border-radius: 8px; padding: 20px; margin-top: 16px;
+}
+.result-box h3 { color: var(--green); margin-bottom: 12px; font-size: 16px; }
+.result-answer {
+  font-family: var(--mono); font-size: 13px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* ── Live progress spinner ─────────────────────────────────────────────── */
+.spinner {
+  display: inline-block; width: 14px; height: 14px;
+  border: 2px solid var(--border); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Toast */
+.toast {
+  position: fixed; top: 20px; right: 20px; padding: 12px 20px;
+  background: var(--bg-card); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  font-size: 13px; z-index: 1000; transition: all 0.3s;
+  max-width: 400px;
+}
+.toast.error { border-color: var(--red); color: var(--red); }
+.toast.success { border-color: var(--green); color: var(--green); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<div id="app">
+  <header>
+    <h1>⚡ <span>RLM</span> Dashboard</h1>
+    <div id="status">
+      <div class="status-dot" id="statusDot"></div>
+      <span id="statusText">Ready</span>
+    </div>
+  </header>
+
+  <div id="layout">
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <button id="newQueryBtn" onclick="showQueryForm()">+ New Query</button>
+      <h2>Trajectories</h2>
+      <div id="trajectoryList"></div>
+    </aside>
+
+    <!-- Main content -->
+    <div id="main">
+      <!-- Query Form -->
+      <div id="queryPanel" class="panel">
+        <div class="panel-header">New Query</div>
+
+        <div class="form-group">
+          <label>Model</label>
+          <span id="modelDisplay" style="color:#e0e0e0; font-size:0.95em;">Loading…</span>
+        </div>
+
+        <div class="form-group">
+          <label>Context Source</label>
+          <div class="tab-bar">
+            <button class="tab-btn active" data-tab="file" onclick="switchTab('file')">📄 File</button>
+            <button class="tab-btn" data-tab="url" onclick="switchTab('url')">🔗 URL</button>
+            <button class="tab-btn" data-tab="paste" onclick="switchTab('paste')">📋 Paste</button>
+          </div>
+          <div id="tab-file" class="tab-content active">
+            <input type="file" id="fileInput" onchange="onFileSelected()">
+          </div>
+          <div id="tab-url" class="tab-content">
+            <input type="url" id="urlInput" placeholder="https://raw.githubusercontent.com/...">
+          </div>
+          <div id="tab-paste" class="tab-content">
+            <textarea id="pasteInput" rows="6" placeholder="Paste your context text here..."></textarea>
+          </div>
+          <div class="context-info" id="contextInfo"></div>
+        </div>
+
+        <div class="form-group">
+          <label>Query</label>
+          <textarea id="queryInput" rows="3" placeholder="What do you want to know about the context?"></textarea>
+        </div>
+
+        <div class="btn-row">
+          <button class="btn btn-primary" id="runBtn" onclick="startRun()">▶ Run Query</button>
+          <button class="btn btn-danger hidden" id="abortBtn" onclick="abortRun()">■ Abort</button>
+        </div>
+      </div>
+
+      <!-- Live Progress -->
+      <div id="progressPanel" class="panel hidden">
+        <div class="panel-header">
+          <span class="spinner"></span> Running...
+          <span id="progressMeta" style="font-size:13px; color:var(--text-dim); font-weight:400; margin-left:auto;"></span>
+        </div>
+        <div id="liveIterations"></div>
+      </div>
+
+      <!-- Trajectory View -->
+      <div id="trajPanel" class="panel hidden"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ───────────────────────────────────────────────────────────────────
+
+let models = [];
+let trajectories = [];
+let contextText = '';
+let activeTab = 'file';
+let isRunning = false;
+let liveIterations = [];
+let liveSubQueries = []; // grouped by iteration
+let currentViewFile = null;
+
+// ── Init ────────────────────────────────────────────────────────────────────
+
+async function init() {
+  setupSSE();
+  await Promise.all([fetchModels(), fetchTrajectories()]);
+}
+
+async function fetchModels() {
+  try {
+    const resp = await fetch('/api/models');
+    const { defaultModel } = await resp.json();
+    document.getElementById('modelDisplay').textContent = defaultModel;
+  } catch (e) {
+    showToast('Failed to load model info', 'error');
+  }
+}
+
+async function fetchTrajectories() {
+  try {
+    const resp = await fetch('/api/trajectories');
+    trajectories = await resp.json();
+    renderSidebar();
+  } catch (e) {
+    showToast('Failed to load trajectories', 'error');
+  }
+}
+
+// ── SSE ─────────────────────────────────────────────────────────────────────
+
+function setupSSE() {
+  const es = new EventSource('/api/events');
+
+  es.addEventListener('started', (e) => {
+    const data = JSON.parse(e.data);
+    isRunning = true;
+    liveIterations = [];
+    liveSubQueries = [];
+    setStatus('running', `Running: ${data.query}`);
+    show('progressPanel'); hide('trajPanel');
+    document.getElementById('liveIterations').innerHTML = '';
+    document.getElementById('runBtn').classList.add('hidden');
+    document.getElementById('abortBtn').classList.remove('hidden');
+    document.getElementById('progressMeta').textContent =
+      `${(data.contextLength/1000).toFixed(1)}K chars`;
+  });
+
+  es.addEventListener('progress', (e) => {
+    const info = JSON.parse(e.data);
+
+    if (info.phase === 'generating_code') {
+      const iter = {
+        iteration: info.iteration,
+        maxIterations: info.maxIterations,
+        code: null, stdout: '', stderr: '', subQueries: [], hasFinal: false, phase: 'generating',
+        userMessage: info.userMessage || '', rawResponse: '', systemPrompt: info.systemPrompt || ''
+      };
+      liveIterations.push(iter);
+      liveSubQueries.push([]);
+      appendLiveIteration(iter);
+    }
+
+    if (info.phase === 'executing' && info.code) {
+      const iter = liveIterations[liveIterations.length - 1];
+      if (iter) {
+        iter.code = info.code;
+        iter.rawResponse = info.rawResponse || '';
+        iter.phase = 'executing';
+      }
+      updateLiveIteration(liveIterations.length - 1);
+    }
+
+    if (info.phase === 'checking_final') {
+      const iter = liveIterations[liveIterations.length - 1];
+      if (iter) {
+        iter.stdout = info.stdout || '';
+        iter.stderr = info.stderr || '';
+        iter.phase = 'done';
+      }
+      updateLiveIteration(liveIterations.length - 1);
+      document.getElementById('progressMeta').textContent =
+        `Iteration ${info.iteration}/${info.maxIterations} · ${info.subQueries} sub-queries`;
+    }
+  });
+
+  es.addEventListener('subquery', (e) => {
+    const sq = JSON.parse(e.data);
+    const idx = liveIterations.length - 1;
+    if (idx >= 0) {
+      liveIterations[idx].subQueries.push(sq);
+      liveSubQueries[idx].push(sq);
+    }
+    updateLiveIteration(idx);
+  });
+
+  es.addEventListener('result', (e) => {
+    const result = JSON.parse(e.data);
+    if (liveIterations.length > 0) {
+      liveIterations[liveIterations.length - 1].hasFinal = true;
+      updateLiveIteration(liveIterations.length - 1);
+    }
+    appendLiveResult(result);
+  });
+
+  es.addEventListener('error', (e) => {
+    const data = JSON.parse(e.data);
+    showToast(data.message, 'error');
+  });
+
+  es.addEventListener('done', () => {
+    isRunning = false;
+    setStatus('ready', 'Ready');
+    document.getElementById('runBtn').classList.remove('hidden');
+    document.getElementById('abortBtn').classList.add('hidden');
+    const spinner = document.querySelector('#progressPanel .spinner');
+    if (spinner) spinner.style.display = 'none';
+    const hdr = document.querySelector('#progressPanel .panel-header');
+    if (hdr) hdr.childNodes[0].textContent = '✓ ';
+    fetchTrajectories();
+  });
+
+  es.onerror = () => {
+    setStatus('error', 'Disconnected');
+  };
+}
+
+// ── Run management ──────────────────────────────────────────────────────────
+
+async function startRun() {
+  const query = document.getElementById('queryInput').value.trim();
+  if (!query) { showToast('Please enter a query', 'error'); return; }
+
+  let context = '';
+  let contextUrl = '';
+
+  if (activeTab === 'file') {
+    if (!contextText) { showToast('Please select a file', 'error'); return; }
+    context = contextText;
+  } else if (activeTab === 'url') {
+    contextUrl = document.getElementById('urlInput').value.trim();
+    if (!contextUrl) { showToast('Please enter a URL', 'error'); return; }
+  } else {
+    context = document.getElementById('pasteInput').value;
+    if (!context.trim()) { showToast('Please paste some context', 'error'); return; }
+  }
+
+  try {
+    const resp = await fetch('/api/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, context, contextUrl }),
+    });
+    const result = await resp.json();
+    if (!resp.ok) { showToast(result.error, 'error'); return; }
+  } catch (e) {
+    showToast('Failed to start run: ' + e.message, 'error');
+  }
+}
+
+async function abortRun() {
+  try { await fetch('/api/abort', { method: 'POST' }); } catch {}
+}
+
+// ── Context handling ────────────────────────────────────────────────────────
+
+function switchTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.toggle('active', c.id === 'tab-' + tab));
+  updateContextInfo();
+}
+
+function onFileSelected() {
+  const input = document.getElementById('fileInput');
+  if (input.files.length === 0) return;
+  const file = input.files[0];
+  const reader = new FileReader();
+  reader.onload = () => {
+    contextText = reader.result;
+    updateContextInfo();
+  };
+  reader.readAsText(file);
+}
+
+function updateContextInfo() {
+  const info = document.getElementById('contextInfo');
+  if (activeTab === 'file' && contextText) {
+    const lines = contextText.split('\n').length;
+    info.textContent = `${contextText.length.toLocaleString()} chars · ${lines.toLocaleString()} lines`;
+  } else if (activeTab === 'paste') {
+    const val = document.getElementById('pasteInput').value;
+    if (val) {
+      info.textContent = `${val.length.toLocaleString()} chars · ${val.split('\n').length.toLocaleString()} lines`;
+    } else { info.textContent = ''; }
+  } else { info.textContent = ''; }
+}
+
+document.getElementById('pasteInput')?.addEventListener('input', updateContextInfo);
+
+// ── Sidebar rendering ───────────────────────────────────────────────────────
+
+function renderSidebar() {
+  const list = document.getElementById('trajectoryList');
+  if (trajectories.length === 0) {
+    list.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:13px;">No trajectories yet. Run a query!</div>';
+    return;
+  }
+  list.innerHTML = trajectories.map(t => {
+    const date = new Date(t.mtime).toLocaleString();
+    const isActive = currentViewFile === t.name;
+    const sizeKB = (t.size / 1024).toFixed(1);
+    const isEmpty = t.size < 500;
+    return `
+      <div class="traj-item ${isActive ? 'active' : ''}" onclick="viewTrajectory('${t.name}')">
+        <div class="traj-date">${date}</div>
+        <div class="traj-query">${t.name.replace('trajectory-', '').replace('.json', '')}</div>
+        <div class="traj-meta">
+          <span>${sizeKB} KB</span>
+          ${isEmpty ? '<span class="traj-empty">empty run</span>' : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+// ── View saved trajectory ───────────────────────────────────────────────────
+
+async function viewTrajectory(filename) {
+  try {
+    const resp = await fetch('/api/trajectory/' + encodeURIComponent(filename));
+    if (!resp.ok) { showToast('Failed to load trajectory', 'error'); return; }
+    const traj = await resp.json();
+    currentViewFile = filename;
+    renderSidebar();
+    renderTrajectoryView(traj, filename);
+    hide('queryPanel'); hide('progressPanel');
+    show('trajPanel');
+  } catch (e) {
+    showToast('Error: ' + e.message, 'error');
+  }
+}
+
+function renderTrajectoryView(traj, filename) {
+  const panel = document.getElementById('trajPanel');
+  const dur = ((traj.totalElapsedMs || 0) / 1000).toFixed(1);
+  const totalSQ = traj.iterations.reduce((s, i) => s + (i.subQueries?.length || 0), 0);
+  const completed = traj.result?.completed;
+
+  let html = `
+    <div class="panel-header" style="justify-content:space-between;">
+      <span>📊 Trajectory</span>
+      <button class="btn btn-danger" style="padding:6px 12px;font-size:12px;"
+              onclick="deleteTrajectory('${filename}')">🗑 Delete</button>
+    </div>
+
+    <div class="meta-grid">
+      <div class="meta-card">
+        <div class="meta-label">Model</div>
+        <div class="meta-value" style="font-size:13px;">${esc(traj.model || 'unknown')}</div>
+      </div>
+      <div class="meta-card">
+        <div class="meta-label">Query</div>
+        <div class="meta-value" style="font-size:13px;color:var(--yellow);">${esc(traj.query || '—')}</div>
+      </div>
+      <div class="meta-card">
+        <div class="meta-label">Context</div>
+        <div class="meta-value">${(traj.contextLength || 0).toLocaleString()} chars</div>
+      </div>
+      <div class="meta-card">
+        <div class="meta-label">Duration</div>
+        <div class="meta-value">${dur}s</div>
+      </div>
+      <div class="meta-card">
+        <div class="meta-label">Iterations</div>
+        <div class="meta-value">${traj.iterations?.length || 0}</div>
+      </div>
+      <div class="meta-card">
+        <div class="meta-label">Sub-queries</div>
+        <div class="meta-value" style="color:var(--magenta);">${totalSQ}</div>
+      </div>
+      <div class="meta-card">
+        <div class="meta-label">Status</div>
+        <div class="meta-value" style="color:${completed ? 'var(--green)' : 'var(--red)'};">
+          ${completed ? '✓ Completed' : '✗ Incomplete'}
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Timeline bar
+  if (traj.iterations && traj.iterations.length > 0) {
+    html += '<div class="timeline-bar">';
+    traj.iterations.forEach((step, i) => {
+      const cls = step.hasFinal ? 'final' : 'done';
+      html += `<div class="timeline-step ${cls}" title="Iteration ${step.iteration}"
+                    onclick="scrollToIter(${i})"></div>`;
+    });
+    html += '</div>';
+  }
+
+  // Iteration cards
+  if (traj.iterations) {
+    traj.iterations.forEach((step, i) => {
+      html += renderIterCard(step, i, true);
+    });
+  }
+
+  // Result
+  if (traj.result) {
+    html += `
+      <div class="result-box">
+        <h3>★ Final Answer</h3>
+        <div class="result-answer">${esc(traj.result.answer)}</div>
+      </div>
+    `;
+  }
+
+  // Re-run button
+  if (traj.query && traj.model) {
+    html += `
+      <div style="margin-top:16px;">
+        <button class="btn btn-primary" onclick="rerunTrajectory(${JSON.stringify(esc(traj.query))})">
+          ↻ Re-run this query
+        </button>
+      </div>
+    `;
+  }
+
+  panel.innerHTML = html;
+}
+
+function renderIterCard(step, idx, collapsed = false) {
+  const sqCount = step.subQueries?.length || 0;
+  const codeLines = step.code ? step.code.split('\n').length : 0;
+  const outLines = step.stdout ? step.stdout.split('\n').length : 0;
+  const elapsed = ((step.elapsedMs || 0) / 1000).toFixed(1);
+
+  let badges = `<span class="badge badge-blue">${elapsed}s</span>`;
+  if (codeLines) badges += `<span class="badge badge-green">${codeLines}L code</span>`;
+  if (outLines) badges += `<span class="badge badge-yellow">${outLines}L output</span>`;
+  if (sqCount) badges += `<span class="badge badge-magenta">${sqCount} sq</span>`;
+  if (step.stderr) badges += `<span class="badge badge-red">stderr</span>`;
+  if (step.hasFinal) badges += `<span class="badge badge-green">★ FINAL</span>`;
+
+  const bodyId = `iter-body-${idx}`;
+  const display = collapsed ? 'none' : 'block';
+
+  let body = '';
+
+  // LLM Input (what was sent to the model)
+  if (step.userMessage) {
+    const msgId = `llm-input-${idx}`;
+    const preview = step.userMessage.length > 300
+      ? esc(step.userMessage.slice(0, 300)) + '\n...'
+      : esc(step.userMessage);
+    body += `
+      <div class="iter-section">
+        <div class="iter-section-title">
+          📥 LLM Input (Prompt)
+          <span class="llm-io-toggle" onclick="toggleBlock('${msgId}')">[expand/collapse]</span>
+        </div>
+        <div class="llm-io-block" id="${msgId}" style="max-height:80px;">${preview}</div>
+        <div style="display:none;" id="${msgId}-full" class="llm-io-block">${esc(step.userMessage)}</div>
+      </div>
+    `;
+  }
+
+  // System prompt (only shown for iteration 1)
+  if (step.systemPrompt) {
+    const spId = `sys-prompt-${idx}`;
+    body += `
+      <div class="iter-section">
+        <div class="iter-section-title">
+          🧠 System Prompt
+          <span class="llm-io-toggle" onclick="toggleBlock('${spId}')">[show/hide]</span>
+        </div>
+        <div class="llm-io-block" id="${spId}" style="display:none;">${esc(step.systemPrompt)}</div>
+      </div>
+    `;
+  }
+
+  if (step.code) {
+    body += `
+      <div class="iter-section">
+        <div class="iter-section-title">Generated Code</div>
+        <div class="code-block">${highlightPython(step.code)}</div>
+      </div>
+    `;
+  }
+
+  // LLM Raw Response (if different from code — shows the full LLM output)
+  if (step.rawResponse && step.rawResponse !== step.code) {
+    const respId = `llm-resp-${idx}`;
+    body += `
+      <div class="iter-section">
+        <div class="iter-section-title">
+          📤 LLM Raw Response
+          <span class="llm-io-toggle" onclick="toggleBlock('${respId}')">[show/hide]</span>
+        </div>
+        <div class="llm-io-block response" id="${respId}" style="display:none;">${esc(step.rawResponse)}</div>
+      </div>
+    `;
+  }
+
+  if (step.stdout) {
+    body += `
+      <div class="iter-section">
+        <div class="iter-section-title">REPL Output</div>
+        <div class="output-block">${esc(step.stdout)}</div>
+      </div>
+    `;
+  }
+
+  if (step.stderr) {
+    body += `
+      <div class="iter-section">
+        <div class="iter-section-title">Stderr</div>
+        <div class="output-block stderr">${esc(step.stderr)}</div>
+      </div>
+    `;
+  }
+
+  if (sqCount > 0) {
+    let sqHtml = '';
+    step.subQueries.forEach(sq => {
+      sqHtml += `
+        <div class="sq-card">
+          <div class="sq-header">Sub-query #${sq.index}</div>
+          <div class="sq-field"><b>Context:</b> ${(sq.contextLength/1000).toFixed(1)}K chars → <b>Result:</b> ${(sq.resultLength/1000).toFixed(1)}K chars</div>
+          <div class="sq-content">${esc(sq.instruction)}</div>
+          <div style="margin-top:6px;font-size:12px;color:var(--text-dim);">Preview:</div>
+          <div class="sq-content" style="color:var(--cyan);">${esc(sq.resultPreview)}</div>
+        </div>
+      `;
+    });
+    body += `
+      <div class="iter-section">
+        <div class="iter-section-title">Sub-queries (${sqCount})</div>
+        ${sqHtml}
+      </div>
+    `;
+  }
+
+  return `
+    <div class="iter-card" id="iter-card-${idx}">
+      <div class="iter-header" onclick="toggleIter(${idx})">
+        <div class="iter-title">
+          <span style="color:${step.hasFinal ? 'var(--green)' : 'var(--accent)'};">
+            ${step.hasFinal ? '★' : '●'}
+          </span>
+          Iteration ${step.iteration}
+        </div>
+        <div class="iter-badges">${badges}</div>
+      </div>
+      <div class="iter-body" id="${bodyId}" style="display:${display};">
+        ${body}
+      </div>
+    </div>
+  `;
+}
+
+function toggleIter(idx) {
+  const body = document.getElementById('iter-body-' + idx);
+  if (body) body.style.display = body.style.display === 'none' ? 'block' : 'none';
+}
+
+function toggleBlock(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  // If there's a "-full" companion, toggle between preview and full
+  const full = document.getElementById(id + '-full');
+  if (full) {
+    if (full.style.display === 'none') {
+      el.style.display = 'none';
+      full.style.display = 'block';
+    } else {
+      el.style.display = 'block';
+      el.style.maxHeight = '80px';
+      full.style.display = 'none';
+    }
+  } else {
+    el.style.display = el.style.display === 'none' ? 'block' : 'none';
+  }
+}
+
+function scrollToIter(idx) {
+  const card = document.getElementById('iter-card-' + idx);
+  if (card) {
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Also expand it
+    const body = document.getElementById('iter-body-' + idx);
+    if (body) body.style.display = 'block';
+  }
+}
+
+// ── Live iteration rendering ────────────────────────────────────────────────
+
+function appendLiveIteration(iter) {
+  const container = document.getElementById('liveIterations');
+  const idx = liveIterations.length - 1;
+  const card = document.createElement('div');
+  card.id = `live-iter-${idx}`;
+  card.innerHTML = renderIterCard(iter, idx, false);
+  container.appendChild(card);
+  card.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+function updateLiveIteration(idx) {
+  const iter = liveIterations[idx];
+  if (!iter) return;
+  const wrapper = document.getElementById(`live-iter-${idx}`);
+  if (!wrapper) return;
+  wrapper.innerHTML = renderIterCard(iter, idx, false);
+}
+
+function appendLiveResult(result) {
+  const container = document.getElementById('liveIterations');
+  const div = document.createElement('div');
+  div.innerHTML = `
+    <div class="result-box">
+      <h3>★ Final Answer</h3>
+      <div class="result-answer">${esc(result.answer)}</div>
+      <div style="margin-top:12px;font-size:13px;color:var(--text-dim);">
+        ${result.iterations} iterations · ${result.totalSubQueries} sub-queries ·
+        ${result.completed ? '✓ completed' : '✗ incomplete'}
+        ${result.trajectoryFile ? ` · saved as ${result.trajectoryFile}` : ''}
+      </div>
+    </div>
+  `;
+  container.appendChild(div);
+  div.scrollIntoView({ behavior: 'smooth', block: 'end' });
+}
+
+// ── Trajectory actions ──────────────────────────────────────────────────────
+
+async function deleteTrajectory(filename) {
+  if (!confirm('Delete this trajectory?')) return;
+  try {
+    await fetch('/api/trajectory/' + encodeURIComponent(filename), { method: 'DELETE' });
+    currentViewFile = null;
+    hide('trajPanel');
+    show('queryPanel');
+    await fetchTrajectories();
+    showToast('Trajectory deleted', 'success');
+  } catch (e) {
+    showToast('Delete failed', 'error');
+  }
+}
+
+function rerunTrajectory(query) {
+  showQueryForm();
+  document.getElementById('queryInput').value = query;
+}
+
+// ── Navigation ──────────────────────────────────────────────────────────────
+
+function showQueryForm() {
+  currentViewFile = null;
+  renderSidebar();
+  show('queryPanel'); hide('progressPanel'); hide('trajPanel');
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+function show(id) { document.getElementById(id).classList.remove('hidden'); }
+function hide(id) { document.getElementById(id).classList.add('hidden'); }
+
+function setStatus(state, text) {
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+  dot.className = 'status-dot' + (state === 'running' ? ' running' : '');
+  if (state === 'error') dot.style.background = 'var(--red)';
+  else dot.style.background = '';
+  txt.textContent = text;
+}
+
+function esc(str) {
+  if (!str) return '';
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function highlightPython(code) {
+  const escaped = esc(code);
+  // Split into tokens: strings, comments, and code
+  const parts = escaped.split(/("""[\s\S]*?"""|&#x27;&#x27;&#x27;[\s\S]*?&#x27;&#x27;&#x27;|&quot;[^&]*?(?:&quot;)|&#x27;[^&]*?(?:&#x27;)|#.*$)/gm);
+  return parts.map((tok, i) => {
+    if (i % 2 === 1) {
+      if (tok.startsWith('#')) return `<span class="hl-comment">${tok}</span>`;
+      return `<span class="hl-string">${tok}</span>`;
+    }
+    return tok
+      .replace(/\b(import|from|def|class|return|if|elif|else|for|while|in|not|and|or|try|except|finally|with|as|raise|pass|break|continue|yield|lambda|True|False|None|is|global|nonlocal|assert|del)\b/g, '<span class="hl-keyword">$1</span>')
+      .replace(/\b(print|len|range|enumerate|sorted|set|list|dict|str|int|float|type|isinstance|zip|map|filter|open|round|abs|min|max|sum|any|all|hasattr|getattr|setattr|append|strip|split|join|replace|startswith|endswith)\b/g, '<span class="hl-builtin">$1</span>')
+      .replace(/\b(llm_query|context|Final)\b/g, '<span class="hl-rlm">$1</span>')
+      .replace(/\b(\d+\.?\d*)\b/g, '<span class="hl-number">$1</span>');
+  }).join('');
+}
+
+function showToast(msg, type = 'error') {
+  const div = document.createElement('div');
+  div.className = `toast ${type}`;
+  div.textContent = msg;
+  document.body.appendChild(div);
+  setTimeout(() => { div.remove(); }, 4000);
+}
+
+// ── Boot ────────────────────────────────────────────────────────────────────
+
+init();
+</script>
+</body>
+</html>

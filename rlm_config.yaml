@@ -1,0 +1,17 @@
+# RLM Configuration
+# See: arXiv:2512.24601
+
+# Maximum iterations per query before giving up
+max_iterations: 20
+
+# Maximum recursive sub-agent depth
+max_depth: 3
+
+# Maximum total sub-queries across all depths
+max_sub_queries: 50
+
+# Truncate REPL output beyond this many characters
+truncate_len: 5000
+
+# Preview lines shown in context metadata
+metadata_preview_lines: 20

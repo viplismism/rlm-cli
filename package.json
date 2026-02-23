@@ -1,0 +1,48 @@
+{
+  "name": "rlm-cli",
+  "version": "0.2.0",
+  "description": "Standalone CLI for Recursive Language Models (RLMs) — implements Algorithm 1 from arXiv:2512.24601",
+  "type": "module",
+  "bin": {
+    "rlm": "./bin/rlm.mjs"
+  },
+  "main": "dist/main.js",
+  "files": [
+    "dist/**/*.js",
+    "dist/**/*.d.ts",
+    "dist/runtime.py",
+    "bin",
+    "rlm_config.yaml"
+  ],
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "build": "tsc && cp src/runtime.py dist/",
+    "start": "node dist/main.js",
+    "cli": "tsx src/cli.ts",
+    "bench:oolong": "tsx benchmarks/oolong_synth.ts",
+    "bench:longbench": "tsx benchmarks/longbench_narrativeqa.ts",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "rlm",
+    "recursive-language-model",
+    "llm",
+    "cli",
+    "agent"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@mariozechner/pi-ai": "^0.53.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.3",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "overrides": {
+    "minimatch": ">=10.2.1"
+  }
+}
