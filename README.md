@@ -1,8 +1,8 @@
 # rlm-cli
 
-CLI for **Recursive Language Models** — implements Algorithm 1 from [arXiv:2512.24601](https://arxiv.org/abs/2512.24601).
+CLI for **Recursive Language Models** — based on the [RLM paper](https://arxiv.org/abs/2512.24601).
 
-RLM processes large contexts by writing and executing Python code in a persistent REPL, recursively decomposing problems via `llm_query()` sub-calls, and aggregating results across iterations until it calls `FINAL()`.
+Instead of dumping a huge context into a single LLM call, RLM lets the model write Python code to process it — slicing, chunking, running sub-queries on pieces, and building up an answer across multiple iterations.
 
 ## Quick Start
 
