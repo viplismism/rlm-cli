@@ -55,6 +55,12 @@ This is the main way to use it. You get a persistent session where you can:
 - Ask questions and watch the RLM loop run — you'll see the code it writes, the output, sub-queries, everything in real-time
 - All runs are saved as trajectory files you can browse later
 
+You don't even need to load context first — just type a query directly and RLM will use your question as the context:
+
+```bash
+> what are the top 5 sorting algorithms and their time complexities?
+```
+
 Load context and ask in one shot:
 
 ```bash
