@@ -1,5 +1,14 @@
 # rlm-cli
 
+```
+                     ██████╗ ██╗     ███╗   ███╗
+                     ██╔══██╗██║     ████╗ ████║
+                     ██████╔╝██║     ██╔████╔██║
+                     ██╔══██╗██║     ██║╚██╔╝██║
+                     ██║  ██║███████╗██║ ╚═╝ ██║
+                     ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝
+```
+
 CLI for **Recursive Language Models** — based on the [RLM paper](https://arxiv.org/abs/2512.24601).
 
 Instead of dumping a huge context into a single LLM call, RLM lets the model write Python code to process it — slicing, chunking, running sub-queries on pieces, and building up an answer across multiple iterations.
@@ -7,74 +16,74 @@ Instead of dumping a huge context into a single LLM call, RLM lets the model wri
 ## Quick Start
 
 ```bash
-# Install
 git clone https://github.com/viplismism/rlm-cli.git
 cd rlm-cli
 npm install
 npm run build
 npm link   # makes `rlm` available globally
-
-# Configure
-cp .env.example .env
-# Edit .env with your API key
 ```
 
-### `.env` file
+Then create a `.env` file with your API key:
 
 ```bash
+cp .env.example .env
+```
+
+```bash
+# .env
 ANTHROPIC_API_KEY=sk-ant-...
 # or
 OPENAI_API_KEY=sk-...
 
 # Optional: override default model
-RLM_MODEL=claude-sonnet-4-5-20250929
+# RLM_MODEL=claude-sonnet-4-5-20250929
 ```
+
+That's it. Run `rlm` and you're in.
 
 ## Usage
 
-### Interactive Terminal (default)
+### Interactive Terminal
 
 ```bash
 rlm
 ```
 
-Opens a persistent REPL session where you can:
+This is the main way to use it. You get a persistent session where you can:
 
-- **Set context** — paste a URL, file path, or multi-line text
-- **Ask queries** — type a question and watch the RLM loop run with real-time display of code, output, sub-queries
-- **Browse trajectories** — `/trajectories` lists saved runs
+- Load context from a file, URL, or by pasting text directly
+- Ask questions and watch the RLM loop run — you'll see the code it writes, the output, sub-queries, everything in real-time
+- All runs are saved as trajectory files you can browse later
 
-**Commands inside the terminal:**
+Load context and ask in one shot:
 
-| Command | Description |
-|---------|-------------|
-| `/file <path>` | Load a file as context |
-| `/url <url>` | Fetch a URL as context |
-| `/paste` | Multi-line paste mode (type `EOF` to finish) |
-| `/context` | Show loaded context info |
-| `/clear-context` | Unload context |
-| `/trajectories` | List saved trajectory files |
-| `/clear` | Clear screen |
-| `/quit` | Exit |
+```bash
+> @path/to/file.txt what are the main functions here?
+```
 
-You can also use shorthands: `@path/to/file.txt what does this do?` loads the file and runs the query in one line.
+Or set context first, then ask multiple questions:
 
-**Keyboard shortcuts:**
+```bash
+> /file big-codebase.py
+> what does the main class do?
+> find all the error handling patterns
+```
 
-- `Ctrl+C` — stop the running query and return to prompt
-- `Ctrl+C` twice — exit the terminal
+**Ctrl+C** stops the current query. **Ctrl+C twice** exits.
 
-### Single-Shot CLI
+Type `/help` inside the terminal for all commands.
+
+### Single-Shot Mode
+
+For scripting or one-off queries:
 
 ```bash
 rlm run --file large-file.txt "List all classes and their methods"
-rlm run --url https://example.com/big.py "Summarize this code"
+rlm run --url https://example.com/data.txt "Summarize this"
 cat data.txt | rlm run --stdin "Count the errors"
 ```
 
-Options: `--model <id>`, `--file <path>`, `--url <url>`, `--stdin`, `--verbose`
-
-The answer goes to stdout, progress to stderr — so you can pipe results.
+Answer goes to stdout, progress to stderr — pipe-friendly.
 
 ### Trajectory Viewer
 
@@ -82,51 +91,67 @@ The answer goes to stdout, progress to stderr — so you can pipe results.
 rlm viewer
 ```
 
-TUI for browsing saved trajectory files. Navigate iterations, inspect code/output, drill into individual sub-queries.
+Browse saved runs in a TUI. Navigate iterations, inspect the code and output at each step, drill into individual sub-queries.
 
-**Keys:** `up/down` navigate, `enter` drill in, `esc` go back, `q` quit.
+## Benchmarks
 
-### Benchmarks
+Compare direct LLM vs RLM on the same query from standard long-context datasets. This runs both approaches side-by-side so you can see the difference.
 
-Compare direct LLM vs RLM on the same query from standard datasets.
+### Setup
+
+Benchmarks use Python to load datasets from HuggingFace:
 
 ```bash
-# Setup (one-time)
 python3 -m venv .venv
 .venv/bin/pip install -r benchmarks/requirements.txt
-
-# Run
-rlm benchmark oolong      # Oolong Synth — synthetic long-context tasks
-rlm benchmark longbench   # LongBench NarrativeQA — reading comprehension
-
-# Pick a specific example
-rlm benchmark oolong --idx 42
-rlm benchmark longbench --idx 75
 ```
 
-Each benchmark loads a dataset example, runs both direct LLM and RLM, and prints a side-by-side comparison with timing and sub-query stats.
+### Available Benchmarks
 
-## Configuration
+| Benchmark | Dataset | What it tests |
+|-----------|---------|---------------|
+| `oolong` | [Oolong Synth](https://huggingface.co/datasets/oolongbench/oolong-synth) | Synthetic long-context tasks: timeline ordering, user tracking, counting |
+| `longbench` | [LongBench NarrativeQA](https://huggingface.co/datasets/THUDM/LongBench) | Reading comprehension over long narratives |
 
-`rlm_config.yaml` in the project root:
+### Running
 
-```yaml
-max_iterations: 20       # Max iterations per query
-max_depth: 3             # Max recursive sub-agent depth
-max_sub_queries: 50      # Max total sub-queries across all depths
-truncate_len: 5000       # Truncate REPL output beyond this many chars
-metadata_preview_lines: 20  # Preview lines shown in context metadata
+```bash
+rlm benchmark oolong          # default example (index 42)
+rlm benchmark longbench       # default example (index 75)
+
+# Pick a specific example from the dataset
+rlm benchmark oolong --idx 10
+rlm benchmark longbench --idx 200
 ```
+
+Each run:
+1. Loads one example from the dataset
+2. Runs direct LLM (single prompt, no RLM)
+3. Runs RLM (iterative code execution with sub-queries)
+4. Prints both answers side-by-side with the expected answer, timing, and stats
+5. Saves a trajectory file for later inspection with `rlm viewer`
 
 ## How It Works
 
-1. The full context is injected into a persistent Python REPL as a `context` variable
-2. The LLM receives metadata about the context (size, preview) plus the user's query
-3. The LLM writes Python code that can inspect/slice `context`, call `llm_query(sub_context, instruction)` for sub-tasks, and call `FINAL(answer)` when done
-4. Code is executed, output is captured, and fed back to the LLM for the next iteration
-5. The loop continues until `FINAL()` is called or max iterations are reached
+1. Your full context is loaded into a persistent Python REPL as a `context` variable
+2. The LLM gets metadata about the context (size, preview of first/last lines) plus your query
+3. It writes Python code that can slice `context`, call `llm_query(chunk, instruction)` to ask sub-questions about pieces, and call `FINAL(answer)` when it has the answer
+4. Code runs, output is captured and fed back for the next iteration
+5. Loop continues until `FINAL()` is called or max iterations are reached
 
-Sub-queries (`llm_query`) send a chunk of context to a fresh LLM call with an instruction, enabling recursive decomposition of large documents. Parallel sub-queries are supported via `async_llm_query()` with `asyncio.gather()`.
+For large documents, the model typically chunks the text and runs parallel sub-queries with `async_llm_query()` + `asyncio.gather()`, then aggregates the results.
+
+## Configuration
+
+Edit `rlm_config.yaml` in the project root:
+
+```yaml
+max_iterations: 20       # Max iterations before giving up
+max_depth: 3             # Max recursive sub-agent depth
+max_sub_queries: 50      # Max total sub-queries
+truncate_len: 5000       # Truncate REPL output beyond this
+metadata_preview_lines: 20
+```
 
 ## Project Structure
 
@@ -134,12 +159,12 @@ Sub-queries (`llm_query`) send a chunk of context to a fresh LLM call with an in
 src/
   main.ts          CLI entry point and command router
   interactive.ts   Interactive terminal REPL
-  rlm.ts           Core RLM loop (Algorithm 1)
+  rlm.ts           Core RLM loop
   repl.ts          Python REPL subprocess manager
   runtime.py       Python runtime (FINAL, llm_query, async_llm_query)
   cli.ts           Single-shot CLI mode
   viewer.ts        Trajectory viewer TUI
-  config.ts        Config loader (rlm_config.yaml)
+  config.ts        Config loader
   env.ts           .env file loader
 benchmarks/
   oolong_synth.ts           Oolong Synth benchmark
@@ -152,8 +177,8 @@ bin/
 ## Requirements
 
 - Node.js >= 20
-- Python 3 (for the REPL runtime)
-- An API key for Anthropic, OpenAI, or OpenRouter
+- Python 3
+- An API key (Anthropic, OpenAI, or OpenRouter)
 
 ## License
 
