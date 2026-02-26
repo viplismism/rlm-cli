@@ -162,12 +162,14 @@ FINAL(final_answer)
 function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 	if (!signal) return promise;
 	if (signal.aborted) return Promise.reject(new Error("Aborted"));
-	return Promise.race([
-		promise,
-		new Promise<never>((_, reject) => {
-			signal.addEventListener("abort", () => reject(new Error("Aborted")), { once: true });
-		}),
-	]);
+	let onAbort: (() => void) | undefined;
+	const abortPromise = new Promise<never>((_, reject) => {
+		onAbort = () => reject(new Error("Aborted"));
+		signal.addEventListener("abort", onAbort, { once: true });
+	});
+	return Promise.race([promise, abortPromise]).finally(() => {
+		if (onAbort) signal.removeEventListener("abort", onAbort);
+	});
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -232,23 +234,18 @@ function truncateOutput(text: string): string {
 export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 	const { context, query, model, repl, signal, onProgress, onSubQueryStart, onSubQuery } = options;
 
-	await repl.setContext(context);
-	await repl.resetFinal();
-
 	let totalSubQueries = 0;
 	let iterationSubQueries = 0;
 
-	repl.setLlmQueryHandler(async (subContext: string, instruction: string) => {
+	const llmQueryHandler = async (subContext: string, instruction: string) => {
 		if (signal?.aborted) throw new Error("Aborted");
 		if (totalSubQueries >= config.max_sub_queries) {
 			return `[ERROR] Maximum sub-query limit (${config.max_sub_queries}) reached. Call FINAL() with your best answer.`;
 		}
-		// Increment both counters; use per-iteration index for display
 		++totalSubQueries;
 		const queryIndex = ++iterationSubQueries;
 		const sqStart = Date.now();
 
-		// Notify: sub-query is starting
 		onSubQueryStart?.({
 			index: queryIndex,
 			contextLength: subContext.length,
@@ -272,7 +269,6 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 		const textParts = response.content.filter((b): b is TextContent => b.type === "text").map((b) => b.text);
 		const result = textParts.join("\n");
 
-		// Notify: sub-query completed
 		onSubQuery?.({
 			index: queryIndex,
 			contextLength: subContext.length,
@@ -283,7 +279,16 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 		});
 
 		return result;
-	});
+	};
+
+	/** Set up (or re-set up) the REPL with context and handler. */
+	async function initRepl() {
+		await repl.setContext(context);
+		await repl.resetFinal();
+		repl.setLlmQueryHandler(llmQueryHandler);
+	}
+
+	await initRepl();
 
 	const metadata = buildContextMetadata(context);
 	const conversationHistory: Message[] = [
@@ -379,6 +384,18 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 				return { answer: "[Aborted]", iterations: iteration, totalSubQueries, completed: false };
 			}
 			const errorMsg = err instanceof Error ? err.message : String(err);
+
+			// If the REPL timed out or crashed, restart it so next iteration works
+			if (errorMsg.includes("Timeout") || errorMsg.includes("not running") || errorMsg.includes("shut down")) {
+				try {
+					repl.shutdown();
+					await repl.start(signal);
+					await initRepl();
+				} catch {
+					return { answer: "[REPL crashed and could not restart]", iterations: iteration, totalSubQueries, completed: false };
+				}
+			}
+
 			conversationHistory.push({
 				role: "user",
 				content: `Execution error: ${errorMsg}\n\nPlease fix the code and try again.`,
