@@ -82,7 +82,12 @@ export class PythonRepl {
 
 		this.proc = spawn("python3", [runtimePath], {
 			stdio: ["pipe", "pipe", "pipe"],
-			env: { ...process.env, PYTHONUNBUFFERED: "1" },
+			env: {
+				// Only pass what Python actually needs — not API keys or secrets
+				PATH: process.env.PATH,
+				HOME: process.env.HOME,
+				PYTHONUNBUFFERED: "1",
+			},
 		});
 
 		this.rl = readline.createInterface({ input: this.proc.stdout! });

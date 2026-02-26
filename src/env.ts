@@ -10,8 +10,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-// Load .env file
-const envPath = path.resolve(process.cwd(), ".env");
+// Load .env file from the package root (not CWD, which could be untrusted)
+const __dir = path.dirname(new URL(import.meta.url).pathname);
+const envPath = path.resolve(__dir, "..", ".env");
 if (fs.existsSync(envPath)) {
 	const content = fs.readFileSync(envPath, "utf-8");
 	for (const line of content.split("\n")) {

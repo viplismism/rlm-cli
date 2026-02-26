@@ -37,5 +37,9 @@ if (existsSync(distEntry)) {
 			stdio: "inherit",
 		});
 		child.on("exit", (code) => process.exit(code ?? 1));
+		child.on("error", (err) => {
+			console.error(`Failed to start rlm: ${err.message}`);
+			process.exit(1);
+		});
 	}
 }

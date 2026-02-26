@@ -84,7 +84,7 @@ async function main() {
 				const script = join(root, benchScripts[benchName]);
 				const tsxBin = join(root, "node_modules", ".bin", "tsx");
 
-				await new Promise<void>((resolve) => {
+				await new Promise<void>((resolve, reject) => {
 					const child = spawn(tsxBin, [script, ...benchArgs], {
 						stdio: "inherit",
 						cwd: root,
@@ -92,6 +92,9 @@ async function main() {
 					child.on("exit", (code) => {
 						process.exitCode = code ?? 1;
 						resolve();
+					});
+					child.on("error", (err) => {
+						reject(new Error(`Failed to spawn benchmark: ${err.message}`));
 					});
 				});
 			} else {
