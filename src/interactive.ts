@@ -848,7 +848,8 @@ async function interactive(): Promise<void> {
 								: `${c.dim}${m.id}${c.reset}`;
 							console.log(`  ${c.dim}${num}${c.reset} ${dot} ${label}`);
 						}
-						console.log(`\n  ${c.dim}Type${c.reset} ${c.cyan}/model <number>${c.reset} ${c.dim}or${c.reset} ${c.cyan}/model <id>${c.reset} ${c.dim}to switch.${c.reset}`);
+						console.log(`\n  ${c.dim}${available.length} models · scroll up to see full list.${c.reset}`);
+						console.log(`  ${c.dim}Type${c.reset} ${c.cyan}/model <number>${c.reset} ${c.dim}or${c.reset} ${c.cyan}/model <id>${c.reset} ${c.dim}to switch.${c.reset}`);
 					}
 					break;
 				}
