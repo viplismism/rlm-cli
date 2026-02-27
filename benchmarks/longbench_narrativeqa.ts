@@ -31,8 +31,18 @@ const requirementsFile = path.join(__root, "benchmarks", "requirements.txt");
 // Auto-setup: create venv and install deps if missing
 if (!fs.existsSync(venvPython)) {
 	console.log("\n  Setting up Python environment...");
+	// Prefer newer Python versions to avoid SSL/numpy compat issues with system 3.9
+	const pythonCandidates = ["python3.13", "python3.12", "python3.11", "python3"];
+	let pythonBin = "python3";
+	for (const candidate of pythonCandidates) {
+		try {
+			execSync(`${candidate} --version`, { stdio: "ignore" });
+			pythonBin = candidate;
+			break;
+		} catch { /* not found, try next */ }
+	}
 	try {
-		execSync(`python3 -m venv "${venvDir}"`, { stdio: "inherit" });
+		execSync(`${pythonBin} -m venv "${venvDir}"`, { stdio: "inherit" });
 		execSync(`"${path.join(venvDir, "bin", "pip")}" install --upgrade pip`, { stdio: "inherit" });
 		execSync(`"${path.join(venvDir, "bin", "pip")}" install -r "${requirementsFile}"`, { stdio: "inherit" });
 		console.log("  Python environment ready.\n");
@@ -197,7 +207,7 @@ function displaySubQueryResult(info: SubQueryInfo): void {
 
 const args = process.argv.slice(2);
 const idxFlag = args.indexOf("--idx");
-const idx = idxFlag !== -1 ? parseInt(args[idxFlag + 1], 10) : 75;
+const idx = idxFlag !== -1 ? parseInt(args[idxFlag + 1], 10) : 182;
 
 console.log(`\n  ${c.cyan}${c.bold}LongBench NarrativeQA Benchmark${c.reset}`);
 console.log(`  ${c.dim}Dataset: THUDM/LongBench (narrativeqa) | Index: ${idx}${c.reset}\n`);
