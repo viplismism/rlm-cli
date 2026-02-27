@@ -115,13 +115,126 @@ function resolveModel(modelId: string): Model<Api> | undefined {
 	return undefined;
 }
 
+// Provider → env var mapping for well-known providers
+const PROVIDER_KEYS: Record<string, string> = {
+	anthropic: "ANTHROPIC_API_KEY",
+	openai: "OPENAI_API_KEY",
+	google: "GOOGLE_API_KEY",
+	"google-gemini-cli": "GOOGLE_API_KEY",
+	"google-vertex": "GOOGLE_VERTEX_API_KEY",
+	groq: "GROQ_API_KEY",
+	xai: "XAI_API_KEY",
+	mistral: "MISTRAL_API_KEY",
+	openrouter: "OPENROUTER_API_KEY",
+	huggingface: "HUGGINGFACE_API_KEY",
+	cerebras: "CEREBRAS_API_KEY",
+};
+
+// User-facing provider list for setup & /provider command
+const SETUP_PROVIDERS = [
+	{ name: "Anthropic", label: "Claude", env: "ANTHROPIC_API_KEY", piProvider: "anthropic" },
+	{ name: "OpenAI", label: "GPT", env: "OPENAI_API_KEY", piProvider: "openai" },
+	{ name: "Google", label: "Gemini", env: "GOOGLE_API_KEY", piProvider: "google" },
+	{ name: "Groq", label: "Groq", env: "GROQ_API_KEY", piProvider: "groq" },
+	{ name: "xAI", label: "Grok", env: "XAI_API_KEY", piProvider: "xai" },
+	{ name: "Mistral", label: "Mistral", env: "MISTRAL_API_KEY", piProvider: "mistral" },
+	{ name: "OpenRouter", label: "OpenRouter", env: "OPENROUTER_API_KEY", piProvider: "openrouter" },
+];
+
+function providerEnvKey(provider: string): string {
+	return PROVIDER_KEYS[provider] || `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+}
+
 function detectProvider(): string {
-	if (process.env.ANTHROPIC_API_KEY) return "anthropic";
-	if (process.env.OPENAI_API_KEY) {
-		if (process.env.OPENAI_BASE_URL?.includes("openrouter")) return "openrouter";
-		return "openai";
+	for (const provider of Object.keys(PROVIDER_KEYS)) {
+		if (process.env[PROVIDER_KEYS[provider]]) return provider;
 	}
 	return "unknown";
+}
+
+function hasAnyApiKey(): boolean {
+	return detectProvider() !== "unknown";
+}
+
+/** Returns the pi-ai provider name + model for a given model ID, searching all providers.
+ *  Prioritises SETUP_PROVIDERS so e.g. "gpt-4o" resolves to "openai" not "azure-openai-responses". */
+function resolveModelWithProvider(modelId: string): { model: Model<Api>; provider: string } | undefined {
+	// First pass: check well-known (setup) providers
+	const knownNames = new Set(SETUP_PROVIDERS.map((p) => p.piProvider));
+	for (const provider of getProviders()) {
+		if (!knownNames.has(provider)) continue;
+		for (const m of getModels(provider)) {
+			if (m.id === modelId) return { model: m, provider };
+		}
+	}
+	// Second pass: all remaining providers
+	for (const provider of getProviders()) {
+		if (knownNames.has(provider)) continue;
+		for (const m of getModels(provider)) {
+			if (m.id === modelId) return { model: m, provider };
+		}
+	}
+	return undefined;
+}
+
+/** Returns the first model ID from a given pi-ai provider. */
+function getDefaultModelForProvider(provider: string): string | undefined {
+	const models = getModels(provider as any);
+	return models.length > 0 ? models[0].id : undefined;
+}
+
+/** Wrap rl.question with ESC-to-cancel. Returns user input or null on ESC/empty. */
+function questionWithEsc(rlInstance: readline.Interface, promptText: string): Promise<string | null> {
+	return new Promise((resolve) => {
+		let escaped = false;
+		const onKeypress = (_str: string | undefined, key: { name?: string } | undefined) => {
+			if (key?.name === "escape" && !escaped) {
+				escaped = true;
+				stdin.removeListener("keypress", onKeypress);
+				// Clear the prompt line visually
+				process.stdout.write("\r\x1b[2K");
+				// Programmatically submit empty to close the pending question
+				rlInstance.write("\n");
+			}
+		};
+		stdin.on("keypress", onKeypress);
+		rlInstance.question(promptText, (answer) => {
+			stdin.removeListener("keypress", onKeypress);
+			resolve(escaped ? null : answer.trim() || null);
+		});
+	});
+}
+
+/** Prompt user for a provider's API key if not already set.
+ *  Returns true (got key), false (empty input), or null (ESC pressed). */
+async function promptForProviderKey(
+	rlInstance: readline.Interface,
+	providerInfo: { name: string; env: string }
+): Promise<boolean | null> {
+	if (process.env[providerInfo.env]) return true;
+
+	const key = await questionWithEsc(rlInstance, `  ${c.cyan}${providerInfo.env}:${c.reset} `);
+	if (key === null) return null; // ESC
+	if (!key) return false; // empty
+
+	process.env[providerInfo.env] = key;
+
+	// Save to shell profile
+	const shellRc = process.env.SHELL?.includes("zsh") ? "~/.zshrc" : "~/.bashrc";
+	const rcPath = shellRc.replace("~", process.env.HOME || "~");
+	try {
+		fs.appendFileSync(rcPath, `\nexport ${providerInfo.env}=${key}\n`);
+		console.log(`\n  ${c.green}✓${c.reset} ${providerInfo.name} key saved to ${c.dim}${shellRc}${c.reset}`);
+	} catch {
+		console.log(`\n  ${c.yellow}!${c.reset} Could not write to ${shellRc}. Add manually:`);
+		console.log(`    ${c.yellow}export ${providerInfo.env}=${key}${c.reset}`);
+	}
+	return true;
+}
+
+/** Find the SETUP_PROVIDERS entry that owns a given pi-ai provider name. */
+function findSetupProvider(piProvider: string): (typeof SETUP_PROVIDERS)[number] | undefined {
+	return SETUP_PROVIDERS.find((p) => p.piProvider === piProvider);
 }
 
 // ── Paste detection ─────────────────────────────────────────────────────────
@@ -197,8 +310,9 @@ ${c.bold}Context${c.reset}
   ${c.cyan}/clear-context${c.reset}       Unload context
 
 ${c.bold}Model${c.reset}
-  ${c.cyan}/model${c.reset}               List available models
+  ${c.cyan}/model${c.reset}               List models for current provider
   ${c.cyan}/model${c.reset} <#|id>         Switch model by number or ID
+  ${c.cyan}/provider${c.reset}            Switch provider
 
 ${c.bold}Tools${c.reset}
   ${c.cyan}/trajectories${c.reset}        List saved runs
@@ -423,14 +537,73 @@ function displaySubQueryResult(info: SubQueryInfo): void {
 
 // ── Available models list ────────────────────────────────────────────────────
 
+/** Filter out deprecated, retired, and non-chat models (Feb 2026). */
+const EXCLUDED_MODEL_PATTERNS = [
+	// ── Anthropic retired ──
+	/^claude-3-haiku/,           // retired Feb 19, 2026
+	/^claude-3-sonnet/,          // long retired
+	/^claude-3-opus/,            // long retired
+	/^claude-3-5-sonnet/,        // retired Jan 5, 2026
+	// ── OpenAI legacy / specialized ──
+	/^gpt-4$/,                   // superseded by gpt-4.1
+	/^gpt-4-turbo/,              // superseded by gpt-4.1
+	/^gpt-4o-2024-/,             // dated snapshots
+	/-chat-latest$/,             // chat variants (use base model)
+	/^codex-/,                   // code-only
+	/-codex/,                    // all codex variants
+	// ── Google retired / deprecated ──
+	/^gemini-1\.5-/,             // all 1.5 retired
+	/^gemini-3-pro-preview$/,    // deprecated, shuts down Mar 9, 2026
+	/^gemini-live-/,             // real-time streaming, not standard chat
+	// ── xAI non-chat ──
+	/^grok-beta$/,
+	/^grok-vision-beta$/,
+	/^grok-2-vision/,
+	/^grok-2-1212$/,             // dated snapshot
+	// ── Mistral legacy ──
+	/^open-mistral-7b$/,
+	/^open-mixtral-/,
+	/^mistral-nemo$/,
+	// ── Dated snapshots / previews ──
+	/preview-\d{2}-\d{2}$/,      // e.g. preview-04-17
+	/preview-\d{2}-\d{4}$/,      // e.g. preview-09-2025
+	/^labs-/,
+	/-customtools$/,
+	/deep-research$/,
+	// Mistral dated snapshots (use -latest instead)
+	/^mistral-large-\d{4}$/,
+	/^mistral-medium-\d{4}$/,
+	/^mistral-small-\d{4}$/,
+	/^devstral-\d{4}$/,
+	/^devstral-\w+-\d{4}$/,
+	// Groq dated snapshots
+	/kimi-k2-instruct-\d+$/,
+];
+
+function isModelExcluded(modelId: string): boolean {
+	return EXCLUDED_MODEL_PATTERNS.some((p) => p.test(modelId));
+}
+
 /** Collect models from providers that have an API key set. */
 function getAvailableModels(): { id: string; provider: string }[] {
 	const items: { id: string; provider: string }[] = [];
 	for (const provider of getProviders()) {
-		const providerKey = `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
-		if (!process.env[providerKey] && provider !== detectProvider()) continue;
+		const key = providerEnvKey(provider);
+		if (!process.env[key] && provider !== detectProvider()) continue;
 		for (const m of getModels(provider)) {
-			items.push({ id: m.id, provider });
+			if (!isModelExcluded(m.id)) items.push({ id: m.id, provider });
+		}
+	}
+	return items;
+}
+
+/** Get models for a specific provider (matching by pi-ai provider name or SETUP_PROVIDERS piProvider). */
+function getModelsForProvider(providerName: string): { id: string; provider: string }[] {
+	const items: { id: string; provider: string }[] = [];
+	for (const provider of getProviders()) {
+		if (provider !== providerName) continue;
+		for (const m of getModels(provider)) {
+			if (!isModelExcluded(m.id)) items.push({ id: m.id, provider });
 		}
 	}
 	return items;
@@ -710,46 +883,56 @@ async function detectAndLoadUrl(input: string): Promise<boolean> {
 
 async function interactive(): Promise<void> {
 	// Validate env
-	const hasApiKey = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
-	if (!hasApiKey) {
+	if (!hasAnyApiKey()) {
 		printBanner();
-		console.log(`  ${c.red}No API key found.${c.reset}\n`);
-		console.log(`  ${c.bold}Paste your API key to get started:${c.reset}\n`);
+		console.log(`  ${c.bold}Welcome! Let's get you set up.${c.reset}\n`);
 
 		const setupRl = readline.createInterface({ input: stdin, output: stdout, terminal: true });
-		const key = await new Promise<string>((resolve) => {
-			setupRl.question(`  ${c.cyan}API key:${c.reset} `, (answer) => {
+		let setupDone = false;
+
+		while (!setupDone) {
+			console.log(`  ${c.bold}Select your provider:${c.reset}\n`);
+			for (let i = 0; i < SETUP_PROVIDERS.length; i++) {
+				console.log(`  ${c.dim}${i + 1}${c.reset}  ${SETUP_PROVIDERS[i].name} ${c.dim}(${SETUP_PROVIDERS[i].label})${c.reset}`);
+			}
+			console.log();
+
+			const choice = await questionWithEsc(setupRl, `  ${c.cyan}Provider [1-${SETUP_PROVIDERS.length}]:${c.reset} `);
+			if (choice === null) {
+				// ESC at provider selection → exit
+				console.log(`\n  ${c.dim}Exiting.${c.reset}\n`);
 				setupRl.close();
-				resolve(answer.trim());
-			});
-		});
+				process.exit(0);
+			}
+			const idx = parseInt(choice, 10) - 1;
+			if (isNaN(idx) || idx < 0 || idx >= SETUP_PROVIDERS.length) {
+				console.log(`\n  ${c.dim}Invalid choice.${c.reset}\n`);
+				continue;
+			}
 
-		if (!key) {
-			console.log(`\n  ${c.dim}No key provided. Exiting.${c.reset}\n`);
-			process.exit(0);
-		}
+			const provider = SETUP_PROVIDERS[idx];
+			const gotKey = await promptForProviderKey(setupRl, provider);
+			if (gotKey === null) {
+				// ESC at key entry → back to provider selection
+				console.log();
+				continue;
+			}
+			if (!gotKey) {
+				console.log(`\n  ${c.dim}No key provided. Exiting.${c.reset}\n`);
+				setupRl.close();
+				process.exit(0);
+			}
 
-		// Detect provider from key format
-		let envVar: string;
-		if (key.startsWith("sk-ant-")) {
-			envVar = "ANTHROPIC_API_KEY";
-			process.env.ANTHROPIC_API_KEY = key;
-		} else {
-			envVar = "OPENAI_API_KEY";
-			process.env.OPENAI_API_KEY = key;
+			// Auto-select default model for chosen provider
+			const defaultModel = getDefaultModelForProvider(provider.piProvider);
+			if (defaultModel) {
+				currentModelId = defaultModel;
+				console.log(`  ${c.green}✓${c.reset} Default model: ${c.bold}${currentModelId}${c.reset}`);
+			}
+			console.log();
+			setupDone = true;
 		}
-
-		// Save to shell profile
-		const shellRc = process.env.SHELL?.includes("zsh") ? "~/.zshrc" : "~/.bashrc";
-		const rcPath = shellRc.replace("~", process.env.HOME || "~");
-		try {
-			fs.appendFileSync(rcPath, `\nexport ${envVar}=${key}\n`);
-			console.log(`\n  ${c.green}✓${c.reset} Key saved to ${c.dim}${shellRc}${c.reset}`);
-		} catch {
-			console.log(`\n  ${c.yellow}!${c.reset} Could not write to ${shellRc}. Add manually:`);
-			console.log(`    ${c.yellow}export ${envVar}=${key}${c.reset}`);
-		}
-		console.log();
+		setupRl.close();
 	}
 
 	// Resolve model
@@ -853,25 +1036,57 @@ async function interactive(): Promise<void> {
 					break;
 				case "model":
 				case "m": {
-					const available = getAvailableModels();
+					const curProvider = detectProvider();
 					if (arg) {
-						// Accept a number or a model ID
-						const pick = /^\d+$/.test(arg) ? available[parseInt(arg, 10) - 1]?.id : arg;
-						const newModel = pick ? resolveModel(pick) : undefined;
-						if (newModel && pick) {
-							currentModelId = pick;
-							currentModel = newModel;
-							console.log(`  ${c.green}✓${c.reset} Switched to ${c.bold}${currentModelId}${c.reset}`);
-							console.log();
-							printStatusLine();
+						// Accept a number (from current provider list) or a model ID
+						const curModels = getModelsForProvider(curProvider);
+						let pick: string | undefined;
+						if (/^\d+$/.test(arg)) {
+							pick = curModels[parseInt(arg, 10) - 1]?.id;
 						} else {
-							console.log(`  ${c.red}Model "${arg}" not found.${c.reset} Use ${c.cyan}/model${c.reset} to list available models.`);
+							pick = arg;
 						}
+						if (!pick) {
+							console.log(`  ${c.red}Invalid selection.${c.reset} Use ${c.cyan}/model${c.reset} to list available models.`);
+							break;
+						}
+
+						// Check if this model belongs to a different provider
+						const resolved = resolveModelWithProvider(pick);
+						if (!resolved) {
+							console.log(`  ${c.red}Model "${arg}" not found.${c.reset} Use ${c.cyan}/model${c.reset} to list available models.`);
+							break;
+						}
+
+						if (resolved.provider !== curProvider) {
+							// Cross-provider switch
+							const setupInfo = findSetupProvider(resolved.provider);
+							const envVar = setupInfo?.env || providerEnvKey(resolved.provider);
+							const provName = setupInfo?.name || resolved.provider;
+
+							if (!process.env[envVar]) {
+								console.log(`  ${c.yellow}That model requires ${provName}.${c.reset}`);
+								const gotKey = await promptForProviderKey(rl, { name: provName, env: envVar });
+								if (!gotKey) {
+									console.log(`  ${c.dim}Cancelled.${c.reset}`);
+									break;
+								}
+							}
+						}
+
+						currentModelId = pick;
+						currentModel = resolved.model;
+						console.log(`  ${c.green}✓${c.reset} Switched to ${c.bold}${currentModelId}${c.reset}`);
+						console.log();
+						printStatusLine();
 					} else {
-						console.log(`\n  ${c.bold}Current model:${c.reset} ${c.cyan}${currentModelId}${c.reset}\n`);
-						const pad = String(available.length).length;
-						for (let i = 0; i < available.length; i++) {
-							const m = available[i];
+						// List models for current provider
+						const models = getModelsForProvider(curProvider);
+						const provLabel = findSetupProvider(curProvider)?.name || curProvider;
+						console.log(`\n  ${c.bold}Current model:${c.reset} ${c.cyan}${currentModelId}${c.reset} ${c.dim}(${provLabel})${c.reset}\n`);
+						const pad = String(models.length).length;
+						for (let i = 0; i < models.length; i++) {
+							const m = models[i];
 							const num = String(i + 1).padStart(pad);
 							const dot = m.id === currentModelId ? `${c.green}●${c.reset}` : ` `;
 							const label = m.id === currentModelId
@@ -879,8 +1094,58 @@ async function interactive(): Promise<void> {
 								: `${c.dim}${m.id}${c.reset}`;
 							console.log(`  ${c.dim}${num}${c.reset} ${dot} ${label}`);
 						}
-						console.log(`\n  ${c.dim}${available.length} models · scroll up to see full list.${c.reset}`);
+						console.log(`\n  ${c.dim}${models.length} models · scroll up to see full list.${c.reset}`);
 						console.log(`  ${c.dim}Type${c.reset} ${c.cyan}/model <number>${c.reset} ${c.dim}or${c.reset} ${c.cyan}/model <id>${c.reset} ${c.dim}to switch.${c.reset}`);
+						console.log(`  ${c.dim}Type${c.reset} ${c.cyan}/provider${c.reset} ${c.dim}to switch provider.${c.reset}`);
+					}
+					break;
+				}
+				case "provider":
+				case "prov": {
+					const curProvider = detectProvider();
+					const curLabel = findSetupProvider(curProvider)?.name || curProvider;
+					console.log(`\n  ${c.bold}Current provider:${c.reset} ${c.cyan}${curLabel}${c.reset}\n`);
+
+					for (let i = 0; i < SETUP_PROVIDERS.length; i++) {
+						const p = SETUP_PROVIDERS[i];
+						const isCurrent = p.piProvider === curProvider;
+						const dot = isCurrent ? `${c.green}●${c.reset}` : ` `;
+						// Only show ✓ for non-current providers that have a key
+						const hasKey = !isCurrent && process.env[p.env] ? `${c.green}✓${c.reset}` : ` `;
+						const label = isCurrent
+							? `${c.cyan}${p.name}${c.reset} ${c.dim}(${p.label})${c.reset}`
+							: `${p.name} ${c.dim}(${p.label})${c.reset}`;
+						console.log(`  ${c.dim}${i + 1}${c.reset} ${dot}${hasKey} ${label}`);
+					}
+					console.log();
+
+					const provChoice = await questionWithEsc(rl, `  ${c.cyan}Provider [1-${SETUP_PROVIDERS.length}]:${c.reset} ${c.dim}(ESC to cancel)${c.reset} `);
+					if (provChoice === null) break; // ESC
+					const idx = parseInt(provChoice, 10) - 1;
+					if (isNaN(idx) || idx < 0 || idx >= SETUP_PROVIDERS.length) {
+						console.log(`  ${c.dim}Cancelled.${c.reset}`);
+						break;
+					}
+
+					const chosen = SETUP_PROVIDERS[idx];
+					const gotKey = await promptForProviderKey(rl, chosen);
+
+					if (!gotKey) {
+						// null (ESC) or false (empty) → cancel
+						break;
+					}
+
+					// Auto-select first model from new provider
+					const defaultModel = getDefaultModelForProvider(chosen.piProvider);
+					if (defaultModel) {
+						currentModelId = defaultModel;
+						currentModel = resolveModel(currentModelId);
+						console.log(`  ${c.green}✓${c.reset} Switched to ${c.bold}${chosen.name}${c.reset}`);
+						console.log(`  ${c.green}✓${c.reset} Default model: ${c.bold}${currentModelId}${c.reset}`);
+						console.log();
+						printStatusLine();
+					} else {
+						console.log(`  ${c.red}No models available for ${chosen.name}.${c.reset}`);
 					}
 					break;
 				}
