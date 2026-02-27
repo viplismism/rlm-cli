@@ -102,8 +102,7 @@ async function main() {
 				console.log(`\x1b[1mUSAGE\x1b[0m`);
 				console.log(`  \x1b[33mrlm benchmark oolong\x1b[0m    [--idx N]  Oolong Synth (synthetic long-context)`);
 				console.log(`  \x1b[33mrlm benchmark longbench\x1b[0m [--idx N]  LongBench NarrativeQA (reading comprehension)\n`);
-				console.log(`\x1b[1mSETUP\x1b[0m`);
-				console.log(`  python3 -m venv .venv && .venv/bin/pip install -r benchmarks/requirements.txt\n`);
+				console.log(`Python dependencies are auto-installed into .venv on first run.\n`);
 				console.log(`Each benchmark loads a dataset example, runs it through both direct LLM`);
 				console.log(`and RLM, then prints a side-by-side comparison with timing.`);
 			}

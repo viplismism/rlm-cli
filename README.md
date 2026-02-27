@@ -103,15 +103,6 @@ Browse saved runs in a TUI. Navigate iterations, inspect the code and output at 
 
 Compare direct LLM vs RLM on the same query from standard long-context datasets. This runs both approaches side-by-side so you can see the difference.
 
-### Setup
-
-Benchmarks use Python to load datasets from HuggingFace:
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r benchmarks/requirements.txt
-```
-
 ### Available Benchmarks
 
 | Benchmark | Dataset | What it tests |
@@ -122,13 +113,15 @@ python3 -m venv .venv
 ### Running
 
 ```bash
-rlm benchmark oolong          # default example (index 42)
-rlm benchmark longbench       # default example (index 75)
+rlm benchmark oolong          # default: index 4743 (14.7MB timeline+subset counting)
+rlm benchmark longbench       # default: index 182 (205KB multi-hop narrative reasoning)
 
 # Pick a specific example from the dataset
 rlm benchmark oolong --idx 10
-rlm benchmark longbench --idx 200
+rlm benchmark longbench --idx 50
 ```
+
+Python dependencies are auto-installed into a `.venv` on first run.
 
 Each run:
 1. Loads one example from the dataset

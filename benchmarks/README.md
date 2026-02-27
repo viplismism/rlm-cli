@@ -4,14 +4,7 @@ Evaluation scripts for testing the RLM CLI against standard long-context benchma
 
 ## Prerequisites
 
-Set up a Python virtual environment with the required dependencies:
-
-```bash
-python3 -m venv .venv
-.venv/bin/pip install -r benchmarks/requirements.txt
-```
-
-The benchmark scripts automatically detect and use `.venv/bin/python3` if present, falling back to the system `python3`.
+Python dependencies are auto-installed into `.venv` on first run. The scripts prefer newer Python versions (3.13/3.12/3.11) over the system default.
 
 ## Available Benchmarks
 
