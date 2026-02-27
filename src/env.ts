@@ -1,20 +1,19 @@
 /**
- * Load .env file into process.env.
+ * Load env vars into process.env.
  * Must be imported BEFORE any module that reads env vars (e.g. pi-ai).
  *
- * Supports:
- * - ANTHROPIC_API_KEY
- * - RLM_MODEL (model name, e.g. claude-sonnet-4-5-20250929)
+ * Load order (later wins):
+ *   1. ~/.rlm/credentials  — persistent keys saved by first-run setup
+ *   2. .env in package root — local overrides
  */
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 
-// Load .env file from the package root (not CWD, which could be untrusted)
-const __dir = path.dirname(new URL(import.meta.url).pathname);
-const envPath = path.resolve(__dir, "..", ".env");
-if (fs.existsSync(envPath)) {
-	const content = fs.readFileSync(envPath, "utf-8");
+function loadEnvFile(filePath: string): void {
+	if (!fs.existsSync(filePath)) return;
+	const content = fs.readFileSync(filePath, "utf-8");
 	for (const line of content.split("\n")) {
 		const trimmed = line.trim();
 		if (!trimmed || trimmed.startsWith("#")) continue;
@@ -22,13 +21,20 @@ if (fs.existsSync(envPath)) {
 		if (eqIndex === -1) continue;
 		const key = trimmed.slice(0, eqIndex).trim();
 		const value = trimmed.slice(eqIndex + 1).trim();
-		if (key) {
+		if (key && !process.env[key]) {
 			process.env[key] = value;
 		}
 	}
 }
 
+// 1. Load persistent credentials (~/.rlm/credentials)
+loadEnvFile(path.join(os.homedir(), ".rlm", "credentials"));
+
+// 2. Load .env from package root (local overrides)
+const __dir = path.dirname(new URL(import.meta.url).pathname);
+loadEnvFile(path.resolve(__dir, "..", ".env"));
+
 // Default model
 if (!process.env.RLM_MODEL) {
-	process.env.RLM_MODEL = "claude-sonnet-4-5-20250929";
+	process.env.RLM_MODEL = "claude-sonnet-4-6";
 }

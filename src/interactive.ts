@@ -236,14 +236,15 @@ async function promptForProviderKey(
 
 	process.env[providerInfo.env] = key;
 
-	// Save to shell profile
-	const shellRc = process.env.SHELL?.includes("zsh") ? "~/.zshrc" : "~/.bashrc";
-	const rcPath = shellRc.replace("~", process.env.HOME || "~");
+	// Save to ~/.rlm/credentials (persistent across sessions)
+	const credDir = path.join(process.env.HOME || "~", ".rlm");
+	const credPath = path.join(credDir, "credentials");
 	try {
-		fs.appendFileSync(rcPath, `\nexport ${providerInfo.env}=${key}\n`);
-		console.log(`\n  ${c.green}✓${c.reset} ${providerInfo.name} key saved to ${c.dim}${shellRc}${c.reset}`);
+		if (!fs.existsSync(credDir)) fs.mkdirSync(credDir, { recursive: true });
+		fs.appendFileSync(credPath, `${providerInfo.env}=${key}\n`);
+		console.log(`\n  ${c.green}✓${c.reset} ${providerInfo.name} key saved to ${c.dim}~/.rlm/credentials${c.reset}`);
 	} catch {
-		console.log(`\n  ${c.yellow}!${c.reset} Could not write to ${shellRc}. Add manually:`);
+		console.log(`\n  ${c.yellow}!${c.reset} Could not save key. Add manually:`);
 		console.log(`    ${c.yellow}export ${providerInfo.env}=${key}${c.reset}`);
 	}
 	return true;
