@@ -190,23 +190,23 @@ function printWelcome(): void {
 function printCommandHelp(): void {
 	console.log(`
 ${c.bold}Context${c.reset}
-  ${c.yellow}/file${c.reset} <path>         Load file as context
-  ${c.yellow}/url${c.reset} <url>           Fetch URL as context
-  ${c.yellow}/paste${c.reset}               Multi-line paste mode (EOF to finish)
-  ${c.yellow}/context${c.reset}             Show loaded context info
-  ${c.yellow}/clear-context${c.reset}       Unload context
+  ${c.cyan}/file${c.reset} <path>         Load file as context
+  ${c.cyan}/url${c.reset} <url>           Fetch URL as context
+  ${c.cyan}/paste${c.reset}               Multi-line paste mode (EOF to finish)
+  ${c.cyan}/context${c.reset}             Show loaded context info
+  ${c.cyan}/clear-context${c.reset}       Unload context
 
 ${c.bold}Model${c.reset}
-  ${c.yellow}/model${c.reset}               Show current model & list available
-  ${c.yellow}/model${c.reset} <id>           Switch model for this session
+  ${c.cyan}/model${c.reset}               List available models
+  ${c.cyan}/model${c.reset} <#|id>         Switch model by number or ID
 
 ${c.bold}Tools${c.reset}
-  ${c.yellow}/trajectories${c.reset}        List saved runs
+  ${c.cyan}/trajectories${c.reset}        List saved runs
 
 ${c.bold}General${c.reset}
-  ${c.yellow}/clear${c.reset}               Clear screen
-  ${c.yellow}/help${c.reset}                Show this help
-  ${c.yellow}/quit${c.reset}                Exit
+  ${c.cyan}/clear${c.reset}               Clear screen
+  ${c.cyan}/help${c.reset}                Show this help
+  ${c.cyan}/quit${c.reset}                Exit
 
   ${c.dim}Or just paste a URL or 4+ lines of code, then type your query.${c.reset}
 `);
@@ -419,6 +419,21 @@ function displaySubQueryResult(info: SubQueryInfo): void {
 	}
 
 	console.log(`    ${c.magenta}└─${c.reset} ${c.dim}${elapsed}s · ${formatSize(info.resultLength)} received${c.reset}`);
+}
+
+// ── Available models list ────────────────────────────────────────────────────
+
+/** Collect models from providers that have an API key set. */
+function getAvailableModels(): { id: string; provider: string }[] {
+	const items: { id: string; provider: string }[] = [];
+	for (const provider of getProviders()) {
+		const providerKey = `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+		if (!process.env[providerKey] && provider !== detectProvider()) continue;
+		for (const m of getModels(provider)) {
+			items.push({ id: m.id, provider });
+		}
+	}
+	return items;
 }
 
 // ── Truncate helper ─────────────────────────────────────────────────────────
@@ -723,6 +738,21 @@ async function interactive(): Promise<void> {
 		terminal: true,
 	});
 
+	// Color slash commands cyan as the user types
+	const rlAny = rl as any;
+	const promptStr = rl.getPrompt();
+	rlAny._writeToOutput = function (str: string) {
+		if (!rlAny.line?.startsWith("/")) {
+			rlAny.output.write(str);
+			return;
+		}
+		if (str.startsWith(promptStr)) {
+			rlAny.output.write(promptStr + c.cyan + str.slice(promptStr.length) + c.reset);
+		} else {
+			rlAny.output.write(c.cyan + str + c.reset);
+		}
+	};
+
 	rl.prompt();
 
 	rl.on("line", async (rawLine: string) => {
@@ -791,34 +821,37 @@ async function interactive(): Promise<void> {
 					console.log(`  ${c.green}✓${c.reset} Context cleared.`);
 					break;
 				case "model":
-				case "m":
+				case "m": {
+					const available = getAvailableModels();
 					if (arg) {
-						const newModel = resolveModel(arg);
-						if (newModel) {
-							currentModelId = arg;
+						// Accept a number or a model ID
+						const pick = /^\d+$/.test(arg) ? available[parseInt(arg, 10) - 1]?.id : arg;
+						const newModel = pick ? resolveModel(pick) : undefined;
+						if (newModel && pick) {
+							currentModelId = pick;
 							currentModel = newModel;
 							console.log(`  ${c.green}✓${c.reset} Switched to ${c.bold}${currentModelId}${c.reset}`);
 							console.log();
 							printStatusLine();
 						} else {
-							console.log(`  ${c.red}Model "${arg}" not found.${c.reset} Use ${c.yellow}/model${c.reset} to list available models.`);
+							console.log(`  ${c.red}Model "${arg}" not found.${c.reset} Use ${c.cyan}/model${c.reset} to list available models.`);
 						}
 					} else {
 						console.log(`\n  ${c.bold}Current model:${c.reset} ${c.cyan}${currentModelId}${c.reset}\n`);
-						for (const provider of getProviders()) {
-							const providerKey = `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
-							if (!process.env[providerKey] && provider !== detectProvider()) continue;
-							const models = getModels(provider);
-							if (models.length === 0) continue;
-							console.log(`  ${c.bold}${provider}${c.reset}`);
-							for (const m of models) {
-								const marker = m.id === currentModelId ? `${c.green}● ${c.reset}` : `  `;
-								console.log(`  ${marker}${c.dim}${m.id}${c.reset}`);
-							}
-							console.log();
+						const pad = String(available.length).length;
+						for (let i = 0; i < available.length; i++) {
+							const m = available[i];
+							const num = String(i + 1).padStart(pad);
+							const dot = m.id === currentModelId ? `${c.green}●${c.reset}` : ` `;
+							const label = m.id === currentModelId
+								? `${c.cyan}${m.id}${c.reset}`
+								: `${c.dim}${m.id}${c.reset}`;
+							console.log(`  ${c.dim}${num}${c.reset} ${dot} ${label}`);
 						}
+						console.log(`\n  ${c.dim}Type${c.reset} ${c.cyan}/model <number>${c.reset} ${c.dim}or${c.reset} ${c.cyan}/model <id>${c.reset} ${c.dim}to switch.${c.reset}`);
 					}
 					break;
+				}
 				case "trajectories":
 				case "traj":
 					handleTrajectories();
@@ -833,7 +866,7 @@ async function interactive(): Promise<void> {
 					process.exit(0);
 					break;
 				default:
-					console.log(`  ${c.red}Unknown command: /${cmd}${c.reset}. Type ${c.yellow}/help${c.reset} for commands.`);
+					console.log(`  ${c.red}Unknown command: /${cmd}${c.reset}. Type ${c.cyan}/help${c.reset} for commands.`);
 			}
 
 			rl.prompt();
