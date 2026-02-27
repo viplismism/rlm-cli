@@ -33,6 +33,7 @@ if (!fs.existsSync(venvPython)) {
 	console.log("\n  Setting up Python environment...");
 	try {
 		execSync(`python3 -m venv "${venvDir}"`, { stdio: "inherit" });
+		execSync(`"${path.join(venvDir, "bin", "pip")}" install --upgrade pip`, { stdio: "inherit" });
 		execSync(`"${path.join(venvDir, "bin", "pip")}" install -r "${requirementsFile}"`, { stdio: "inherit" });
 		console.log("  Python environment ready.\n");
 	} catch {
