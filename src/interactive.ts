@@ -196,6 +196,10 @@ ${c.bold}Context${c.reset}
   ${c.yellow}/context${c.reset}             Show loaded context info
   ${c.yellow}/clear-context${c.reset}       Unload context
 
+${c.bold}Model${c.reset}
+  ${c.yellow}/model${c.reset}               Show current model & list available
+  ${c.yellow}/model${c.reset} <id>           Switch model for this session
+
 ${c.bold}Tools${c.reset}
   ${c.yellow}/trajectories${c.reset}        List saved runs
 
@@ -693,9 +697,13 @@ async function interactive(): Promise<void> {
 	// Validate env
 	const hasApiKey = process.env.ANTHROPIC_API_KEY || process.env.OPENAI_API_KEY;
 	if (!hasApiKey) {
-		console.log(`\n  ${c.red}No API key found.${c.reset}`);
-		console.log(`  Set ${c.bold}ANTHROPIC_API_KEY${c.reset} or ${c.bold}OPENAI_API_KEY${c.reset} in your .env file.\n`);
-		process.exit(1);
+		printBanner();
+		console.log(`  ${c.red}No API key found.${c.reset}\n`);
+		console.log(`  Set one of these environment variables:\n`);
+		console.log(`    ${c.yellow}export ANTHROPIC_API_KEY=sk-ant-...${c.reset}    ${c.dim}# Anthropic (Claude)${c.reset}`);
+		console.log(`    ${c.yellow}export OPENAI_API_KEY=sk-...${c.reset}           ${c.dim}# OpenAI (GPT)${c.reset}\n`);
+		console.log(`  ${c.dim}Add to your shell profile (~/.zshrc or ~/.bashrc) to persist across sessions.${c.reset}\n`);
+		process.exit(0);
 	}
 
 	// Resolve model
@@ -782,11 +790,40 @@ async function interactive(): Promise<void> {
 					contextSource = "";
 					console.log(`  ${c.green}✓${c.reset} Context cleared.`);
 					break;
+				case "model":
+				case "m":
+					if (arg) {
+						const newModel = resolveModel(arg);
+						if (newModel) {
+							currentModelId = arg;
+							currentModel = newModel;
+							console.log(`  ${c.green}✓${c.reset} Switched to ${c.bold}${currentModelId}${c.reset}`);
+							console.log();
+							printStatusLine();
+						} else {
+							console.log(`  ${c.red}Model "${arg}" not found.${c.reset} Use ${c.yellow}/model${c.reset} to list available models.`);
+						}
+					} else {
+						console.log(`\n  ${c.bold}Current model:${c.reset} ${c.cyan}${currentModelId}${c.reset}\n`);
+						for (const provider of getProviders()) {
+							const providerKey = `${provider.toUpperCase().replace(/-/g, "_")}_API_KEY`;
+							if (!process.env[providerKey] && provider !== detectProvider()) continue;
+							const models = getModels(provider);
+							if (models.length === 0) continue;
+							console.log(`  ${c.bold}${provider}${c.reset}`);
+							for (const m of models) {
+								const marker = m.id === currentModelId ? `${c.green}● ${c.reset}` : `  `;
+								console.log(`  ${marker}${c.dim}${m.id}${c.reset}`);
+							}
+							console.log();
+						}
+					}
+					break;
 				case "trajectories":
 				case "traj":
 					handleTrajectories();
 					break;
-					case "clear":
+				case "clear":
 					printWelcome();
 					break;
 				case "quit":
