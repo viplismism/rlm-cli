@@ -13,33 +13,37 @@ CLI for **Recursive Language Models** — based on the [RLM paper](https://arxiv
 
 Instead of dumping a huge context into a single LLM call, RLM lets the model write Python code to process it — slicing, chunking, running sub-queries on pieces, and building up an answer across multiple iterations.
 
-## Quick Start
+## Install
+
+```bash
+npm install -g rlm-cli
+```
+
+Set your API key:
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+# or
+export OPENAI_API_KEY=sk-...
+```
+
+That's it. Run `rlm` and you're in.
+
+### From Source
 
 ```bash
 git clone https://github.com/viplismism/rlm-cli.git
 cd rlm-cli
 npm install
 npm run build
-npm link   # makes `rlm` available globally
+npm link
 ```
 
-Then create a `.env` file with your API key:
+Create a `.env` file in the project root with your API key:
 
 ```bash
 cp .env.example .env
 ```
-
-```bash
-# .env
-ANTHROPIC_API_KEY=sk-ant-...
-# or
-OPENAI_API_KEY=sk-...
-
-# Optional: override default model
-# RLM_MODEL=claude-sonnet-4-5-20250929
-```
-
-That's it. Run `rlm` and you're in.
 
 ## Usage
 
