@@ -86,7 +86,7 @@ class Spinner {
 
 // ── Constants ───────────────────────────────────────────────────────────────
 
-const DEFAULT_MODEL = process.env.RLM_MODEL || "claude-sonnet-4-5-20250929";
+const DEFAULT_MODEL = process.env.RLM_MODEL || "claude-sonnet-4-6";
 const TRAJ_DIR = path.resolve(process.cwd(), "trajectories");
 const W = Math.min(process.stdout.columns || 80, 100);
 
@@ -177,9 +177,26 @@ function resolveModelWithProvider(modelId: string): { model: Model<Api>; provide
 	return undefined;
 }
 
-/** Returns the first model ID from a given pi-ai provider. */
+/** Sensible default model per provider. */
+const PROVIDER_DEFAULT_MODELS: Record<string, string> = {
+	anthropic: "claude-sonnet-4-6",
+	openai: "gpt-4o",
+	google: "gemini-2.5-flash",
+	groq: "llama-3.3-70b-versatile",
+	xai: "grok-4",
+	mistral: "mistral-large-latest",
+	openrouter: "claude-sonnet-4-6",
+};
+
+/** Returns the recommended default model for a provider. */
 function getDefaultModelForProvider(provider: string): string | undefined {
-	const models = getModels(provider as any);
+	const preferred = PROVIDER_DEFAULT_MODELS[provider];
+	if (preferred) {
+		const model = resolveModel(preferred);
+		if (model) return preferred;
+	}
+	// Fallback: first non-excluded model
+	const models = getModelsForProvider(provider);
 	return models.length > 0 ? models[0].id : undefined;
 }
 
@@ -539,11 +556,8 @@ function displaySubQueryResult(info: SubQueryInfo): void {
 
 /** Filter out deprecated, retired, and non-chat models (Feb 2026). */
 const EXCLUDED_MODEL_PATTERNS = [
-	// ── Anthropic retired ──
-	/^claude-3-haiku/,           // retired Feb 19, 2026
-	/^claude-3-sonnet/,          // long retired
-	/^claude-3-opus/,            // long retired
-	/^claude-3-5-sonnet/,        // retired Jan 5, 2026
+	// ── Anthropic retired / old gen ──
+	/^claude-3-/,                // all claude 3.x retired (haiku, sonnet, opus, 3-5-*, 3-7-*)
 	// ── OpenAI legacy / specialized ──
 	/^gpt-4$/,                   // superseded by gpt-4.1
 	/^gpt-4-turbo/,              // superseded by gpt-4.1
