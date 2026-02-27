@@ -714,11 +714,42 @@ async function interactive(): Promise<void> {
 	if (!hasApiKey) {
 		printBanner();
 		console.log(`  ${c.red}No API key found.${c.reset}\n`);
-		console.log(`  Set one of these environment variables:\n`);
-		console.log(`    ${c.yellow}export ANTHROPIC_API_KEY=sk-ant-...${c.reset}    ${c.dim}# Anthropic (Claude)${c.reset}`);
-		console.log(`    ${c.yellow}export OPENAI_API_KEY=sk-...${c.reset}           ${c.dim}# OpenAI (GPT)${c.reset}\n`);
-		console.log(`  ${c.dim}Add to your shell profile (~/.zshrc or ~/.bashrc) to persist across sessions.${c.reset}\n`);
-		process.exit(0);
+		console.log(`  ${c.bold}Paste your API key to get started:${c.reset}\n`);
+
+		const setupRl = readline.createInterface({ input: stdin, output: stdout, terminal: true });
+		const key = await new Promise<string>((resolve) => {
+			setupRl.question(`  ${c.cyan}API key:${c.reset} `, (answer) => {
+				setupRl.close();
+				resolve(answer.trim());
+			});
+		});
+
+		if (!key) {
+			console.log(`\n  ${c.dim}No key provided. Exiting.${c.reset}\n`);
+			process.exit(0);
+		}
+
+		// Detect provider from key format
+		let envVar: string;
+		if (key.startsWith("sk-ant-")) {
+			envVar = "ANTHROPIC_API_KEY";
+			process.env.ANTHROPIC_API_KEY = key;
+		} else {
+			envVar = "OPENAI_API_KEY";
+			process.env.OPENAI_API_KEY = key;
+		}
+
+		// Save to shell profile
+		const shellRc = process.env.SHELL?.includes("zsh") ? "~/.zshrc" : "~/.bashrc";
+		const rcPath = shellRc.replace("~", process.env.HOME || "~");
+		try {
+			fs.appendFileSync(rcPath, `\nexport ${envVar}=${key}\n`);
+			console.log(`\n  ${c.green}✓${c.reset} Key saved to ${c.dim}${shellRc}${c.reset}`);
+		} catch {
+			console.log(`\n  ${c.yellow}!${c.reset} Could not write to ${shellRc}. Add manually:`);
+			console.log(`    ${c.yellow}export ${envVar}=${key}${c.reset}`);
+		}
+		console.log();
 	}
 
 	// Resolve model
