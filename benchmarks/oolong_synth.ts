@@ -8,7 +8,7 @@
  * Usage:
  *   npx tsx benchmarks/oolong_synth.ts [--idx 42]
  *
- * Requires: python3 -m venv .venv && .venv/bin/pip install -r benchmarks/requirements.txt
+ * Python deps are auto-installed into .venv on first run.
  */
 
 import "../src/env.js";
@@ -21,9 +21,27 @@ import * as path from "node:path";
 import type { Api, Model, TextContent } from "@mariozechner/pi-ai";
 import type { RlmProgress, SubQueryStartInfo, SubQueryInfo } from "../src/rlm.js";
 
-// Resolve Python: prefer .venv if it exists
-const venvPython = path.resolve(process.cwd(), ".venv", "bin", "python3");
-const PYTHON = fs.existsSync(venvPython) ? venvPython : "python3";
+// Resolve paths from package root (not CWD)
+const __benchDir = path.dirname(new URL(import.meta.url).pathname);
+const __root = path.resolve(__benchDir, "..");
+const venvDir = path.join(__root, ".venv");
+const venvPython = path.join(venvDir, "bin", "python3");
+const requirementsFile = path.join(__root, "benchmarks", "requirements.txt");
+
+// Auto-setup: create venv and install deps if missing
+if (!fs.existsSync(venvPython)) {
+	console.log("\n  Setting up Python environment...");
+	try {
+		execSync(`python3 -m venv "${venvDir}"`, { stdio: "inherit" });
+		execSync(`"${path.join(venvDir, "bin", "pip")}" install -r "${requirementsFile}"`, { stdio: "inherit" });
+		console.log("  Python environment ready.\n");
+	} catch {
+		console.error("Failed to set up Python environment.");
+		console.error(`  Try manually: python3 -m venv .venv && .venv/bin/pip install -r benchmarks/requirements.txt`);
+		process.exit(1);
+	}
+}
+const PYTHON = venvPython;
 
 // ── ANSI + display helpers (matching interactive.ts style) ─────────────────
 
