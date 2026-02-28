@@ -11,8 +11,19 @@
 import "./env.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import * as os from "node:os";
 import * as readline from "node:readline";
 import { stdin, stdout } from "node:process";
+
+// Global error handlers — prevent raw stack traces from leaking to terminal
+process.on("uncaughtException", (err) => {
+	console.error(`\n  \x1b[31mUnexpected error: ${err.message}\x1b[0m\n`);
+	process.exit(1);
+});
+process.on("unhandledRejection", (err: any) => {
+	console.error(`\n  \x1b[31mUnexpected error: ${err?.message || err}\x1b[0m\n`);
+	process.exit(1);
+});
 
 const { getModels, getProviders } = await import("@mariozechner/pi-ai");
 const { PythonRepl } = await import("./repl.js");
@@ -87,7 +98,8 @@ class Spinner {
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const DEFAULT_MODEL = process.env.RLM_MODEL || "claude-sonnet-4-6";
-const TRAJ_DIR = path.resolve(process.cwd(), "trajectories");
+const RLM_HOME = path.join(os.homedir(), ".rlm");
+const TRAJ_DIR = path.join(RLM_HOME, "trajectories");
 const W = Math.min(process.stdout.columns || 80, 100);
 
 // ── Session state ───────────────────────────────────────────────────────────
@@ -230,18 +242,23 @@ async function promptForProviderKey(
 ): Promise<boolean | null> {
 	if (process.env[providerInfo.env]) return true;
 
-	const key = await questionWithEsc(rlInstance, `  ${c.cyan}${providerInfo.env}:${c.reset} `);
-	if (key === null) return null; // ESC
-	if (!key) return false; // empty
+	const rawKey = await questionWithEsc(rlInstance, `  ${c.cyan}${providerInfo.env}:${c.reset} `);
+	if (rawKey === null) return null; // ESC
+	if (!rawKey) return false; // empty
+
+	// Sanitize: strip newlines, control chars, whitespace
+	const key = rawKey.replace(/[\r\n\x00-\x1f]/g, "").trim();
+	if (!key) return false;
 
 	process.env[providerInfo.env] = key;
 
 	// Save to ~/.rlm/credentials (persistent across sessions)
-	const credDir = path.join(process.env.HOME || "~", ".rlm");
-	const credPath = path.join(credDir, "credentials");
+	const credPath = path.join(RLM_HOME, "credentials");
 	try {
-		if (!fs.existsSync(credDir)) fs.mkdirSync(credDir, { recursive: true });
+		if (!fs.existsSync(RLM_HOME)) fs.mkdirSync(RLM_HOME, { recursive: true });
 		fs.appendFileSync(credPath, `${providerInfo.env}=${key}\n`);
+		// Restrict permissions (owner-only read/write)
+		try { fs.chmodSync(credPath, 0o600); } catch { /* Windows etc. */ }
 		console.log(`\n  ${c.green}✓${c.reset} ${providerInfo.name} key saved to ${c.dim}~/.rlm/credentials${c.reset}`);
 	} catch {
 		console.log(`\n  ${c.yellow}!${c.reset} Could not save key. Add manually:`);
@@ -356,12 +373,16 @@ async function handleFile(arg: string): Promise<void> {
 		console.log(`  ${c.red}File not found: ${filePath}${c.reset}`);
 		return;
 	}
-	contextText = fs.readFileSync(filePath, "utf-8");
-	contextSource = arg;
-	const lines = contextText.split("\n").length;
-	console.log(
-		`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines.toLocaleString()} lines) from ${c.underline}${arg}${c.reset}`
-	);
+	try {
+		contextText = fs.readFileSync(filePath, "utf-8");
+		contextSource = arg;
+		const lines = contextText.split("\n").length;
+		console.log(
+			`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines.toLocaleString()} lines) from ${c.underline}${arg}${c.reset}`
+		);
+	} catch (err: any) {
+		console.log(`  ${c.red}Could not read file: ${err.message}${c.reset}`);
+	}
 }
 
 async function handleUrl(arg: string): Promise<void> {
@@ -788,11 +809,15 @@ async function runQuery(query: string): Promise<void> {
 		console.log();
 
 		// Save trajectory
-		if (!fs.existsSync(TRAJ_DIR)) fs.mkdirSync(TRAJ_DIR, { recursive: true });
-		const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-		const trajFile = `trajectory-${ts}.json`;
-		fs.writeFileSync(path.join(TRAJ_DIR, trajFile), JSON.stringify(trajectory, null, 2), "utf-8");
-		console.log(`  ${c.dim}Saved: ${trajFile}${c.reset}\n`);
+		try {
+			if (!fs.existsSync(TRAJ_DIR)) fs.mkdirSync(TRAJ_DIR, { recursive: true });
+			const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+			const trajFile = `trajectory-${ts}.json`;
+			fs.writeFileSync(path.join(TRAJ_DIR, trajFile), JSON.stringify(trajectory, null, 2), "utf-8");
+			console.log(`  ${c.dim}Saved: ~/.rlm/trajectories/${trajFile}${c.reset}\n`);
+		} catch {
+			console.log(`  ${c.yellow}Could not save trajectory.${c.reset}\n`);
+		}
 	} catch (err: any) {
 		spinner.stop();
 		const msg = err?.message || String(err);
@@ -854,13 +879,18 @@ function expandAtFiles(input: string): string {
 	if (atMatch) {
 		const filePath = path.resolve(atMatch[1]);
 		if (fs.existsSync(filePath)) {
-			contextText = fs.readFileSync(filePath, "utf-8");
-			contextSource = atMatch[1];
-			const lines = contextText.split("\n").length;
-			console.log(
-				`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines} lines) from ${c.underline}${atMatch[1]}${c.reset}`
-			);
-			return atMatch[2] || "";
+			try {
+				contextText = fs.readFileSync(filePath, "utf-8");
+				contextSource = atMatch[1];
+				const lines = contextText.split("\n").length;
+				console.log(
+					`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines} lines) from ${c.underline}${atMatch[1]}${c.reset}`
+				);
+				return atMatch[2] || "";
+			} catch (err: any) {
+				console.log(`  ${c.red}Could not read file: ${err.message}${c.reset}`);
+				return "";
+			}
 		} else {
 			console.log(`  ${c.red}File not found: ${atMatch[1]}${c.reset}`);
 			return "";
@@ -985,6 +1015,7 @@ async function interactive(): Promise<void> {
 	rl.prompt();
 
 	rl.on("line", async (rawLine: string) => {
+	  try {
 		if (isRunning) return; // ignore input while a query is active
 		const line = rawLine.trim();
 
@@ -1245,6 +1276,10 @@ async function interactive(): Promise<void> {
 		printStatusLine();
 		console.log();
 		rl.prompt();
+	  } catch (err: any) {
+		console.log(`\n  ${c.red}Error: ${err?.message || err}${c.reset}\n`);
+		rl.prompt();
+	  }
 	});
 
 	// Ctrl+C: abort running query, or double-tap to exit
