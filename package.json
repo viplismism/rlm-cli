@@ -30,7 +30,14 @@
     "cli",
     "agent"
   ],
+  "author": "Vipul Maheshwari <vim.code.level@gmail.com>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/viplismism/rlm-cli.git"
+  },
+  "homepage": "https://github.com/viplismism/rlm-cli",
+  "bugs": "https://github.com/viplismism/rlm-cli/issues",
   "dependencies": {
     "@mariozechner/pi-ai": "^0.55.1"
   },
