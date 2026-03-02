@@ -8,7 +8,9 @@
 
 import { type ChildProcess, spawn } from "node:child_process";
 import * as path from "node:path";
+import * as os from "node:os";
 import * as readline from "node:readline";
+import { fileURLToPath } from "node:url";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -78,14 +80,16 @@ export class PythonRepl {
 	async start(signal?: AbortSignal): Promise<void> {
 		if (this.isAlive) return;
 
-		const runtimePath = path.join(path.dirname(new URL(import.meta.url).pathname), "runtime.py");
+		const runtimePath = path.join(path.dirname(fileURLToPath(import.meta.url)), "runtime.py");
 
-		this.proc = spawn("python3", [runtimePath], {
+		const pythonCmd = process.platform === "win32" ? "python" : "python3";
+
+		this.proc = spawn(pythonCmd, [runtimePath], {
 			stdio: ["pipe", "pipe", "pipe"],
 			env: {
 				// Only pass what Python actually needs — not API keys or secrets
 				PATH: process.env.PATH,
-				HOME: process.env.HOME,
+				HOME: os.homedir(),
 				PYTHONUNBUFFERED: "1",
 			},
 		});

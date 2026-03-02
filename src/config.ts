@@ -6,6 +6,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface RlmConfig {
 	max_iterations: number;
@@ -55,7 +56,7 @@ export function loadConfig(): RlmConfig {
 	// Search order: cwd, then package root
 	const candidates = [
 		path.resolve(process.cwd(), "rlm_config.yaml"),
-		path.resolve(new URL(".", import.meta.url).pathname, "..", "rlm_config.yaml"),
+		path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "rlm_config.yaml"),
 	];
 
 	for (const configPath of candidates) {

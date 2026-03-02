@@ -10,6 +10,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { fileURLToPath } from "node:url";
 
 function loadEnvFile(filePath: string): void {
 	if (!fs.existsSync(filePath)) return;
@@ -31,7 +32,7 @@ function loadEnvFile(filePath: string): void {
 loadEnvFile(path.join(os.homedir(), ".rlm", "credentials"));
 
 // 2. Load .env from package root (local overrides)
-const __dir = path.dirname(new URL(import.meta.url).pathname);
+const __dir = path.dirname(fileURLToPath(import.meta.url));
 loadEnvFile(path.resolve(__dir, "..", ".env"));
 
 // Default model

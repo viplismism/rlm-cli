@@ -7,7 +7,7 @@
  * then falls back to tsx for development.
  */
 
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { existsSync } from "node:fs";
 
@@ -15,8 +15,8 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const distEntry = join(__dirname, "..", "dist", "main.js");
 
 if (existsSync(distEntry)) {
-	// Production: use compiled JS
-	await import(distEntry);
+	// Production: use compiled JS (pathToFileURL needed for Windows)
+	await import(pathToFileURL(distEntry).href);
 } else {
 	// Development: use tsx to run TypeScript directly
 	const srcEntry = join(__dirname, "..", "src", "main.ts");
@@ -26,9 +26,9 @@ if (existsSync(distEntry)) {
 	try {
 		const tsxPath = join(__dirname, "..", "node_modules", "tsx", "dist", "esm", "index.mjs");
 		if (existsSync(tsxPath)) {
-			register(tsxPath);
+			register(pathToFileURL(tsxPath).href);
 		}
-		await import(srcEntry);
+		await import(pathToFileURL(srcEntry).href);
 	} catch {
 		// Fallback: spawn tsx as a child process
 		const { spawn } = await import("node:child_process");
