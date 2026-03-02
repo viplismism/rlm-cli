@@ -83,6 +83,41 @@ Or set context first, then ask multiple questions:
 
 Type `/help` inside the terminal for all commands.
 
+### Loading Context
+
+You can load single files, multiple files, entire directories, or glob patterns as context.
+
+**Single file:**
+
+```bash
+> @src/main.ts what does this do?
+> /file src/main.ts
+```
+
+**Multiple files:**
+
+```bash
+> @src/main.ts @src/config.ts how do these interact?
+> /file src/main.ts src/config.ts
+```
+
+**Directory** (recursive — skips `node_modules`, `.git`, `dist`, binaries, etc.):
+
+```bash
+> @src/ summarize this codebase
+> /file src/
+```
+
+**Glob patterns:**
+
+```bash
+> @src/**/*.ts list all exports
+> /file src/**/*.ts
+> /file lib/*.{js,ts}
+```
+
+Safety limits: max 100 files, max 10MB total. Use `/context` to see what's loaded.
+
 ### Single-Shot Mode
 
 For scripting or one-off queries:

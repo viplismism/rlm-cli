@@ -338,27 +338,42 @@ function printWelcome(): void {
 
 function printCommandHelp(): void {
 	console.log(`
-${c.bold}Context${c.reset}
-  ${c.cyan}/file${c.reset} <path>         Load file as context
-  ${c.cyan}/url${c.reset} <url>           Fetch URL as context
-  ${c.cyan}/paste${c.reset}               Multi-line paste mode (EOF to finish)
-  ${c.cyan}/context${c.reset}             Show loaded context info
-  ${c.cyan}/clear-context${c.reset}       Unload context
+${c.bold}Loading Context${c.reset}
+  ${c.cyan}/file${c.reset} <path>              Load a single file
+  ${c.cyan}/file${c.reset} <p1> <p2> ...       Load multiple files
+  ${c.cyan}/file${c.reset} <dir>/              Load all files in a directory (recursive)
+  ${c.cyan}/file${c.reset} src/**/*.ts         Load files matching a glob pattern
+  ${c.cyan}/url${c.reset} <url>                Fetch URL as context
+  ${c.cyan}/paste${c.reset}                    Multi-line paste mode (type EOF to finish)
+  ${c.cyan}/context${c.reset}                  Show loaded context info + file list
+  ${c.cyan}/clear-context${c.reset}            Unload context
 
-${c.bold}Model${c.reset}
-  ${c.cyan}/model${c.reset}               List models for current provider
-  ${c.cyan}/model${c.reset} <#|id>         Switch model by number or ID
-  ${c.cyan}/provider${c.reset}            Switch provider
+${c.bold}@ Shorthand${c.reset}  ${c.dim}(inline file loading)${c.reset}
+  ${c.cyan}@file.ts${c.reset} <query>           Load file and ask in one shot
+  ${c.cyan}@a.ts @b.ts${c.reset} <query>        Load multiple files + query
+  ${c.cyan}@src/${c.reset} <query>              Load directory + query
+  ${c.cyan}@src/**/*.ts${c.reset} <query>       Load glob + query
+
+${c.bold}Model & Provider${c.reset}
+  ${c.cyan}/model${c.reset}                    List models for current provider
+  ${c.cyan}/model${c.reset} <#|id>              Switch model by number or ID
+  ${c.cyan}/provider${c.reset}                 Switch provider (Anthropic, OpenAI, Google, ...)
 
 ${c.bold}Tools${c.reset}
-  ${c.cyan}/trajectories${c.reset}        List saved runs
+  ${c.cyan}/trajectories${c.reset}             List saved runs
 
 ${c.bold}General${c.reset}
-  ${c.cyan}/clear${c.reset}               Clear screen
-  ${c.cyan}/help${c.reset}                Show this help
-  ${c.cyan}/quit${c.reset}                Exit
+  ${c.cyan}/clear${c.reset}                    Clear screen
+  ${c.cyan}/help${c.reset}                     Show this help
+  ${c.cyan}/quit${c.reset}                     Exit
 
-  ${c.dim}Or just paste a URL or 4+ lines of code, then type your query.${c.reset}
+${c.bold}Tips${c.reset}
+  ${c.dim}•${c.reset} Just type a question — no context needed for general queries
+  ${c.dim}•${c.reset} Paste a URL directly to fetch it as context
+  ${c.dim}•${c.reset} Paste 4+ lines of text to set it as context
+  ${c.dim}•${c.reset} ${c.bold}Ctrl+C${c.reset} stops a running query, ${c.bold}Ctrl+C twice${c.reset} exits
+  ${c.dim}•${c.reset} Directories skip node_modules, .git, dist, binaries, etc.
+  ${c.dim}•${c.reset} Limits: ${MAX_FILES} files max, ${MAX_TOTAL_BYTES / 1024 / 1024}MB total
 `);
 }
 
@@ -366,23 +381,43 @@ ${c.bold}General${c.reset}
 
 async function handleFile(arg: string): Promise<void> {
 	if (!arg) {
-		console.log(`  ${c.red}Usage: /file <path>${c.reset}`);
+		console.log(`  ${c.red}Usage: /file <path|dir|glob> [...]${c.reset}`);
+		console.log(`  ${c.dim}Examples: /file src/main.ts  |  /file src/  |  /file src/**/*.ts${c.reset}`);
 		return;
 	}
-	const filePath = path.resolve(arg);
-	if (!fs.existsSync(filePath)) {
-		console.log(`  ${c.red}File not found: ${filePath}${c.reset}`);
+	const args = arg.split(/\s+/).filter(Boolean);
+	const filePaths = resolveFileArgs(args);
+
+	if (filePaths.length === 0) {
+		console.log(`  ${c.red}No files found.${c.reset}`);
 		return;
 	}
-	try {
-		contextText = fs.readFileSync(filePath, "utf-8");
-		contextSource = arg;
-		const lines = contextText.split("\n").length;
+
+	if (filePaths.length === 1) {
+		try {
+			contextText = fs.readFileSync(filePaths[0], "utf-8");
+			contextSource = path.relative(process.cwd(), filePaths[0]) || filePaths[0];
+			const lines = contextText.split("\n").length;
+			console.log(
+				`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines.toLocaleString()} lines) from ${c.underline}${contextSource}${c.reset}`
+			);
+		} catch (err: any) {
+			console.log(`  ${c.red}Could not read file: ${err.message}${c.reset}`);
+		}
+	} else {
+		const { text, count, totalBytes } = loadMultipleFiles(filePaths);
+		contextText = text;
+		contextSource = `${count} files`;
 		console.log(
-			`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines.toLocaleString()} lines) from ${c.underline}${arg}${c.reset}`
+			`  ${c.green}✓${c.reset} Loaded ${c.bold}${count}${c.reset} files (${(totalBytes / 1024).toFixed(1)}KB total)`
 		);
-	} catch (err: any) {
-		console.log(`  ${c.red}Could not read file: ${err.message}${c.reset}`);
+		// Show file list
+		for (const fp of filePaths.slice(0, 20)) {
+			console.log(`    ${c.dim}•${c.reset} ${path.relative(process.cwd(), fp)}`);
+		}
+		if (filePaths.length > 20) {
+			console.log(`    ${c.dim}... and ${filePaths.length - 20} more${c.reset}`);
+		}
 	}
 }
 
@@ -429,20 +464,35 @@ function handlePaste(rl: readline.Interface): Promise<void> {
 
 function handleContext(): void {
 	if (!contextText) {
-		console.log(`  ${c.dim}No context loaded. Use /file, /url, or /paste.${c.reset}`);
+		console.log(`  ${c.dim}No context loaded. Use /file, /url, @file, or /paste.${c.reset}`);
 		return;
 	}
 	const lines = contextText.split("\n").length;
-	console.log(`  ${c.bold}Context:${c.reset} ${contextText.length.toLocaleString()} chars, ${lines.toLocaleString()} lines`);
+	const sizeKB = (contextText.length / 1024).toFixed(1);
+	console.log(`  ${c.bold}Context:${c.reset} ${contextText.length.toLocaleString()} chars (${sizeKB}KB), ${lines.toLocaleString()} lines`);
 	console.log(`  ${c.bold}Source:${c.reset}  ${contextSource}`);
-	console.log();
-	const preview = contextText.slice(0, 500);
-	const previewLines = preview.split("\n").slice(0, 8);
-	for (const l of previewLines) {
-		console.log(`  ${c.dim}│${c.reset} ${l}`);
-	}
-	if (contextText.length > 500) {
-		console.log(`  ${c.dim}│ ...${c.reset}`);
+
+	// For multi-file context, extract and display individual file paths
+	const fileSeparators = contextText.match(/^=== .+ ===$/gm);
+	if (fileSeparators && fileSeparators.length > 1) {
+		console.log(`  ${c.bold}Files:${c.reset}   ${fileSeparators.length}`);
+		for (const sep of fileSeparators.slice(0, 20)) {
+			const name = sep.replace(/^=== /, "").replace(/ ===$/, "");
+			console.log(`    ${c.dim}•${c.reset} ${name}`);
+		}
+		if (fileSeparators.length > 20) {
+			console.log(`    ${c.dim}... and ${fileSeparators.length - 20} more${c.reset}`);
+		}
+	} else {
+		console.log();
+		const preview = contextText.slice(0, 500);
+		const previewLines = preview.split("\n").slice(0, 8);
+		for (const l of previewLines) {
+			console.log(`  ${c.dim}│${c.reset} ${l}`);
+		}
+		if (contextText.length > 500) {
+			console.log(`  ${c.dim}│ ...${c.reset}`);
+		}
 	}
 }
 
@@ -650,6 +700,166 @@ function getModelsForProvider(providerName: string): { id: string; provider: str
 
 function truncateStr(text: string, max: number): string {
 	return text.length <= max ? text : text.slice(0, max - 3) + "...";
+}
+
+// ── Multi-file context loading ──────────────────────────────────────────────
+
+const MAX_FILES = 100;
+const MAX_TOTAL_BYTES = 10 * 1024 * 1024; // 10MB
+
+const BINARY_EXTENSIONS = new Set([
+	".png", ".jpg", ".jpeg", ".gif", ".bmp", ".ico", ".webp", ".svg",
+	".mp3", ".mp4", ".wav", ".ogg", ".flac", ".avi", ".mov", ".mkv",
+	".zip", ".gz", ".tar", ".bz2", ".7z", ".rar", ".xz",
+	".exe", ".dll", ".so", ".dylib", ".bin", ".o", ".a",
+	".woff", ".woff2", ".ttf", ".otf", ".eot",
+	".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+	".pyc", ".pyo", ".class", ".jar",
+	".db", ".sqlite", ".sqlite3",
+	".DS_Store",
+]);
+
+const SKIP_DIRS = new Set([
+	"node_modules", ".git", "dist", "build", "__pycache__", ".venv",
+	"venv", ".next", ".nuxt", "coverage", ".cache", ".tsc-output",
+	".svelte-kit", "target", "out",
+]);
+
+function isBinaryFile(filePath: string): boolean {
+	const ext = path.extname(filePath).toLowerCase();
+	if (BINARY_EXTENSIONS.has(ext)) return true;
+	// Quick null-byte check on first 512 bytes
+	try {
+		const fd = fs.openSync(filePath, "r");
+		const buf = Buffer.alloc(512);
+		const bytesRead = fs.readSync(fd, buf, 0, 512, 0);
+		fs.closeSync(fd);
+		for (let i = 0; i < bytesRead; i++) {
+			if (buf[i] === 0) return true;
+		}
+	} catch { /* unreadable → skip */ return true; }
+	return false;
+}
+
+function walkDir(dir: string): string[] {
+	const results: string[] = [];
+	let entries: fs.Dirent[];
+	try {
+		entries = fs.readdirSync(dir, { withFileTypes: true });
+	} catch { return results; }
+
+	for (const entry of entries) {
+		if (entry.name.startsWith(".") && entry.name !== ".env") continue;
+		const full = path.join(dir, entry.name);
+		if (entry.isDirectory()) {
+			if (SKIP_DIRS.has(entry.name)) continue;
+			results.push(...walkDir(full));
+		} else if (entry.isFile()) {
+			if (!isBinaryFile(full)) results.push(full);
+		}
+		if (results.length > MAX_FILES) break;
+	}
+	return results;
+}
+
+function simpleGlobMatch(pattern: string, filePath: string): boolean {
+	// Expand {a,b,c} braces into alternatives
+	const braceMatch = pattern.match(/\{([^}]+)\}/);
+	if (braceMatch) {
+		const alternatives = braceMatch[1].split(",");
+		return alternatives.some((alt) =>
+			simpleGlobMatch(pattern.replace(braceMatch[0], alt.trim()), filePath)
+		);
+	}
+
+	// Convert glob to regex
+	let regex = "^";
+	let i = 0;
+	while (i < pattern.length) {
+		const ch = pattern[i];
+		if (ch === "*" && pattern[i + 1] === "*") {
+			// ** matches any path segment(s)
+			regex += ".*";
+			i += 2;
+			if (pattern[i] === "/") i++; // skip trailing slash after **
+		} else if (ch === "*") {
+			regex += "[^/]*";
+			i++;
+		} else if (ch === "?") {
+			regex += "[^/]";
+			i++;
+		} else if (".+^$|()[]\\".includes(ch)) {
+			regex += "\\" + ch;
+			i++;
+		} else {
+			regex += ch;
+			i++;
+		}
+	}
+	regex += "$";
+	return new RegExp(regex).test(filePath);
+}
+
+function resolveFileArgs(args: string[]): string[] {
+	const files: string[] = [];
+	for (const arg of args) {
+		const resolved = path.resolve(arg);
+
+		// Glob pattern (contains * or ?)
+		if (arg.includes("*") || arg.includes("?")) {
+			// Find the base directory (portion before the first glob char)
+			const firstGlob = arg.search(/[*?{]/);
+			const baseDir = firstGlob > 0 ? path.resolve(arg.slice(0, arg.lastIndexOf("/", firstGlob) + 1) || ".") : process.cwd();
+			const allFiles = walkDir(baseDir);
+			for (const f of allFiles) {
+				const rel = path.relative(process.cwd(), f);
+				if (simpleGlobMatch(arg, rel) || simpleGlobMatch(arg, f)) {
+					files.push(f);
+				}
+			}
+			continue;
+		}
+
+		// Directory
+		if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
+			files.push(...walkDir(resolved));
+			continue;
+		}
+
+		// Regular file
+		if (fs.existsSync(resolved)) {
+			if (!isBinaryFile(resolved)) files.push(resolved);
+			continue;
+		}
+
+		console.log(`  ${c.yellow}⚠${c.reset} Not found: ${arg}`);
+	}
+	return [...new Set(files)]; // deduplicate
+}
+
+function loadMultipleFiles(filePaths: string[]): { text: string; count: number; totalBytes: number } {
+	if (filePaths.length > MAX_FILES) {
+		console.log(`  ${c.yellow}⚠${c.reset} Too many files (${filePaths.length}). Limit is ${MAX_FILES}.`);
+		filePaths = filePaths.slice(0, MAX_FILES);
+	}
+
+	const parts: string[] = [];
+	let totalBytes = 0;
+
+	for (const fp of filePaths) {
+		try {
+			const content = fs.readFileSync(fp, "utf-8");
+			if (totalBytes + content.length > MAX_TOTAL_BYTES) {
+				console.log(`  ${c.yellow}⚠${c.reset} Size limit reached (${(MAX_TOTAL_BYTES / 1024 / 1024).toFixed(0)}MB). Loaded ${parts.length} of ${filePaths.length} files.`);
+				break;
+			}
+			const rel = path.relative(process.cwd(), fp);
+			parts.push(`=== ${rel} ===\n${content}`);
+			totalBytes += content.length;
+		} catch { /* skip unreadable */ }
+	}
+
+	return { text: parts.join("\n\n"), count: parts.length, totalBytes };
 }
 
 // ── Run RLM query ───────────────────────────────────────────────────────────
@@ -880,28 +1090,50 @@ function extractFilePath(input: string): { filePath: string | null; query: strin
 }
 
 function expandAtFiles(input: string): string {
-	const atMatch = input.match(/^@(\S+)\s*(.*)/);
-	if (atMatch) {
-		const filePath = path.resolve(atMatch[1]);
-		if (fs.existsSync(filePath)) {
-			try {
-				contextText = fs.readFileSync(filePath, "utf-8");
-				contextSource = atMatch[1];
-				const lines = contextText.split("\n").length;
-				console.log(
-					`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines} lines) from ${c.underline}${atMatch[1]}${c.reset}`
-				);
-				return atMatch[2] || "";
-			} catch (err: any) {
-				console.log(`  ${c.red}Could not read file: ${err.message}${c.reset}`);
-				return "";
-			}
+	// Extract all @tokens from input
+	const tokens: string[] = [];
+	const remaining: string[] = [];
+
+	for (const part of input.split(/\s+/)) {
+		if (part.startsWith("@") && part.length > 1) {
+			tokens.push(part.slice(1));
 		} else {
-			console.log(`  ${c.red}File not found: ${atMatch[1]}${c.reset}`);
-			return "";
+			remaining.push(part);
 		}
 	}
-	return input;
+
+	if (tokens.length === 0) return input;
+
+	const filePaths = resolveFileArgs(tokens);
+	if (filePaths.length === 0) {
+		console.log(`  ${c.red}No files found for: ${tokens.join(", ")}${c.reset}`);
+		return "";
+	}
+
+	if (filePaths.length === 1) {
+		// Single file — simple load
+		try {
+			contextText = fs.readFileSync(filePaths[0], "utf-8");
+			contextSource = path.relative(process.cwd(), filePaths[0]) || filePaths[0];
+			const lines = contextText.split("\n").length;
+			console.log(
+				`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines} lines) from ${c.underline}${contextSource}${c.reset}`
+			);
+		} catch (err: any) {
+			console.log(`  ${c.red}Could not read file: ${err.message}${c.reset}`);
+			return "";
+		}
+	} else {
+		// Multiple files — concatenate with separators
+		const { text, count, totalBytes } = loadMultipleFiles(filePaths);
+		contextText = text;
+		contextSource = `${count} files`;
+		console.log(
+			`  ${c.green}✓${c.reset} Loaded ${c.bold}${count}${c.reset} files (${(totalBytes / 1024).toFixed(1)}KB total)`
+		);
+	}
+
+	return remaining.join(" ");
 }
 
 // ── Auto-detect URLs ────────────────────────────────────────────────────────
