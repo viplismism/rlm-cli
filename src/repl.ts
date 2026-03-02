@@ -84,13 +84,18 @@ export class PythonRepl {
 
 		const pythonCmd = process.platform === "win32" ? "python" : "python3";
 
+		const homeDir = os.homedir();
 		this.proc = spawn(pythonCmd, [runtimePath], {
 			stdio: ["pipe", "pipe", "pipe"],
 			env: {
 				// Only pass what Python actually needs — not API keys or secrets
 				PATH: process.env.PATH,
-				HOME: os.homedir(),
+				HOME: homeDir,
+				USERPROFILE: homeDir, // Windows uses USERPROFILE
 				PYTHONUNBUFFERED: "1",
+				// Windows needs SystemRoot/SYSTEMROOT for Python to find DLLs
+				...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+				...(process.env.SYSTEMROOT ? { SYSTEMROOT: process.env.SYSTEMROOT } : {}),
 			},
 		});
 
@@ -158,7 +163,10 @@ export class PythonRepl {
 			} catch {
 				// stdin may already be closed
 			}
-			this.proc.kill("SIGTERM");
+			// SIGTERM is ignored on Windows; use SIGKILL as fallback
+			try {
+				this.proc.kill(process.platform === "win32" ? "SIGKILL" : "SIGTERM");
+			} catch { /* already dead */ }
 		}
 		this.cleanup();
 	}

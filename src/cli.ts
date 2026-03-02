@@ -108,9 +108,16 @@ function parseArgs(): CliArgs {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
+const MAX_STDIN_BYTES = 50 * 1024 * 1024; // 50MB
+
 async function readStdin(): Promise<string> {
 	const chunks: Buffer[] = [];
+	let total = 0;
 	for await (const chunk of process.stdin) {
+		total += (chunk as Buffer).length;
+		if (total > MAX_STDIN_BYTES) {
+			throw new Error(`stdin exceeds ${MAX_STDIN_BYTES / 1024 / 1024}MB limit`);
+		}
 		chunks.push(chunk as Buffer);
 	}
 	return Buffer.concat(chunks).toString("utf-8");
@@ -151,7 +158,12 @@ async function main(): Promise<void> {
 	let context: string;
 	if (args.file) {
 		console.error(`Reading context from file: ${args.file}`);
-		context = fs.readFileSync(args.file, "utf-8");
+		try {
+			context = fs.readFileSync(args.file, "utf-8");
+		} catch (err: any) {
+			console.error(`Error: could not read file "${args.file}": ${err.message}`);
+			process.exit(1);
+		}
 	} else if (args.url) {
 		console.error(`Fetching context from URL: ${args.url}`);
 		context = await fetchUrl(args.url);

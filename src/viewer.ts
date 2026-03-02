@@ -758,9 +758,14 @@ async function main(): Promise<void> {
 	// Enter alternate screen buffer so output never scrolls the main terminal
 	W(c.altScreenOn);
 
-	// Ensure we always leave alt screen on exit
-	const cleanup = () => W(c.showCursor, c.altScreenOff);
+	// Ensure we always restore terminal on exit (alt screen, cursor, raw mode)
+	const cleanup = () => {
+		try { process.stdin.setRawMode(false); } catch {}
+		W(c.showCursor, c.altScreenOff);
+	};
 	process.on("exit", cleanup);
+	process.on("SIGINT", () => { cleanup(); process.exit(0); });
+	process.on("SIGTERM", () => { cleanup(); process.exit(0); });
 
 	let filePath: string | undefined = process.argv[2];
 

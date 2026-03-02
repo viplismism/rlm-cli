@@ -1,5 +1,7 @@
 # rlm-cli
 
+[![npm version](https://img.shields.io/npm/v/rlm-cli.svg)](https://www.npmjs.com/package/rlm-cli)
+
 ```
                      ██████╗ ██╗     ███╗   ███╗
                      ██╔══██╗██║     ████╗ ████║

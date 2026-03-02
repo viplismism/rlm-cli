@@ -729,19 +729,23 @@ function isBinaryFile(filePath: string): boolean {
 	const ext = path.extname(filePath).toLowerCase();
 	if (BINARY_EXTENSIONS.has(ext)) return true;
 	// Quick null-byte check on first 512 bytes
+	let fd: number | undefined;
 	try {
-		const fd = fs.openSync(filePath, "r");
+		fd = fs.openSync(filePath, "r");
 		const buf = Buffer.alloc(512);
 		const bytesRead = fs.readSync(fd, buf, 0, 512, 0);
-		fs.closeSync(fd);
 		for (let i = 0; i < bytesRead; i++) {
 			if (buf[i] === 0) return true;
 		}
 	} catch { /* unreadable → skip */ return true; }
+	finally { if (fd !== undefined) try { fs.closeSync(fd); } catch {} }
 	return false;
 }
 
-function walkDir(dir: string): string[] {
+const MAX_DIR_DEPTH = 30;
+
+function walkDir(dir: string, depth = 0): string[] {
+	if (depth > MAX_DIR_DEPTH) return [];
 	const results: string[] = [];
 	let entries: fs.Dirent[];
 	try {
@@ -750,10 +754,11 @@ function walkDir(dir: string): string[] {
 
 	for (const entry of entries) {
 		if (entry.name.startsWith(".") && entry.name !== ".env") continue;
+		if (entry.isSymbolicLink()) continue;
 		const full = path.join(dir, entry.name);
 		if (entry.isDirectory()) {
 			if (SKIP_DIRS.has(entry.name)) continue;
-			results.push(...walkDir(full));
+			results.push(...walkDir(full, depth + 1));
 		} else if (entry.isFile()) {
 			if (!isBinaryFile(full)) results.push(full);
 		}
@@ -762,13 +767,13 @@ function walkDir(dir: string): string[] {
 	return results;
 }
 
-function simpleGlobMatch(pattern: string, filePath: string): boolean {
-	// Expand {a,b,c} braces into alternatives
+function simpleGlobMatch(pattern: string, filePath: string, _braceDepth = 0): boolean {
+	// Expand {a,b,c} braces into alternatives (with depth limit)
 	const braceMatch = pattern.match(/\{([^}]+)\}/);
-	if (braceMatch) {
-		const alternatives = braceMatch[1].split(",");
+	if (braceMatch && _braceDepth < 5) {
+		const alternatives = braceMatch[1].split(",").slice(0, 50);
 		return alternatives.some((alt) =>
-			simpleGlobMatch(pattern.replace(braceMatch[0], alt.trim()), filePath)
+			simpleGlobMatch(pattern.replace(braceMatch[0], alt.trim()), filePath, _braceDepth + 1)
 		);
 	}
 
