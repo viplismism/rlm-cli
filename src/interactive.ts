@@ -753,21 +753,32 @@ function walkDir(dir: string, depth = 0): string[] {
 	} catch { return results; }
 
 	for (const entry of entries) {
+		if (results.length >= MAX_FILES) break;
 		if (entry.name.startsWith(".") && entry.name !== ".env") continue;
 		if (entry.isSymbolicLink()) continue;
 		const full = path.join(dir, entry.name);
 		if (entry.isDirectory()) {
 			if (SKIP_DIRS.has(entry.name)) continue;
-			results.push(...walkDir(full, depth + 1));
+			const sub = walkDir(full, depth + 1);
+			const remaining = MAX_FILES - results.length;
+			results.push(...sub.slice(0, remaining));
 		} else if (entry.isFile()) {
 			if (!isBinaryFile(full)) results.push(full);
 		}
-		if (results.length > MAX_FILES) break;
 	}
 	return results;
 }
 
+/** Normalize path separators to forward slash for consistent matching. */
+function toForwardSlash(p: string): string {
+	return p.replace(/\\/g, "/");
+}
+
 function simpleGlobMatch(pattern: string, filePath: string, _braceDepth = 0): boolean {
+	// Normalize both to forward slashes for cross-platform matching
+	pattern = toForwardSlash(pattern);
+	filePath = toForwardSlash(filePath);
+
 	// Expand {a,b,c} braces into alternatives (with depth limit)
 	const braceMatch = pattern.match(/\{([^}]+)\}/);
 	if (braceMatch && _braceDepth < 5) {
@@ -813,8 +824,9 @@ function resolveFileArgs(args: string[]): string[] {
 		// Glob pattern (contains * or ?)
 		if (arg.includes("*") || arg.includes("?")) {
 			// Find the base directory (portion before the first glob char)
-			const firstGlob = arg.search(/[*?{]/);
-			const baseDir = firstGlob > 0 ? path.resolve(arg.slice(0, arg.lastIndexOf("/", firstGlob) + 1) || ".") : process.cwd();
+			const normalized = toForwardSlash(arg);
+			const firstGlob = normalized.search(/[*?{]/);
+			const baseDir = firstGlob > 0 ? path.resolve(normalized.slice(0, normalized.lastIndexOf("/", firstGlob) + 1) || ".") : process.cwd();
 			const allFiles = walkDir(baseDir);
 			for (const f of allFiles) {
 				const rel = path.relative(process.cwd(), f);
@@ -1073,7 +1085,8 @@ function extractFilePath(input: string): { filePath: string | null; query: strin
 		}
 	}
 
-	const absPathMatch = input.match(/(\/[^\s]+)/);
+	// Unix absolute path (/...) or Windows absolute path (C:\...)
+	const absPathMatch = input.match(/((?:\/|[A-Za-z]:[\\\/])[^\s]+)/);
 	if (absPathMatch) {
 		const filePath = absPathMatch[1];
 		if (fs.existsSync(filePath)) {
@@ -1082,7 +1095,8 @@ function extractFilePath(input: string): { filePath: string | null; query: strin
 		}
 	}
 
-	const relPathMatch = input.match(/([\w\-\.]+\/[\w\-\./]+\.\w{2,6})/);
+	// Relative path with forward or back slashes
+	const relPathMatch = input.match(/([\w\-\.]+[\/\\][\w\-\.\/\\]+\.\w{2,6})/);
 	if (relPathMatch) {
 		const filePath = path.resolve(relPathMatch[1]);
 		if (fs.existsSync(filePath)) {
