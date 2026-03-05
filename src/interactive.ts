@@ -120,12 +120,8 @@ let activeSpinner: Spinner | null = null;
 // ── Resolve model ───────────────────────────────────────────────────────────
 
 function resolveModel(modelId: string): Model<Api> | undefined {
-	for (const provider of getProviders()) {
-		for (const m of getModels(provider)) {
-			if (m.id === modelId) return m;
-		}
-	}
-	return undefined;
+	const result = resolveModelWithProvider(modelId);
+	return result?.model;
 }
 
 // Provider → env var mapping for well-known providers
@@ -139,7 +135,7 @@ const PROVIDER_KEYS: Record<string, string> = {
 	xai: "XAI_API_KEY",
 	mistral: "MISTRAL_API_KEY",
 	openrouter: "OPENROUTER_API_KEY",
-	huggingface: "HUGGINGFACE_API_KEY",
+	huggingface: "HF_TOKEN",
 	cerebras: "CEREBRAS_API_KEY",
 };
 
@@ -685,8 +681,7 @@ function isModelExcluded(modelId: string): boolean {
 function getAvailableModels(): { id: string; provider: string }[] {
 	const items: { id: string; provider: string }[] = [];
 	for (const provider of getProviders()) {
-		const key = providerEnvKey(provider);
-		if (!process.env[key] && provider !== detectProvider()) continue;
+		if (!process.env[providerEnvKey(provider)]) continue;
 		for (const m of getModels(provider)) {
 			if (!isModelExcluded(m.id)) items.push({ id: m.id, provider });
 		}
@@ -902,13 +897,12 @@ async function runQuery(query: string): Promise<void> {
 			currentProviderName = resolved.provider;
 		}
 	}
-	// Safety: verify the model's provider has an API key — re-resolve if not
-	if (currentModel) {
-		const modelProv = (currentModel as any).provider as string | undefined;
-		if (modelProv && modelProv !== currentProviderName) {
-			// Model object's internal provider doesn't match our tracked provider — re-resolve
+	// Safety: verify the current provider still has an API key — re-resolve if not
+	if (currentModel && currentProviderName) {
+		const key = providerEnvKey(currentProviderName);
+		if (!process.env[key]) {
 			const resolved = resolveModelWithProvider(currentModelId);
-			if (resolved) {
+			if (resolved && process.env[providerEnvKey(resolved.provider)]) {
 				currentModel = resolved.model;
 				currentProviderName = resolved.provider;
 			}
