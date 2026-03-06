@@ -25,7 +25,7 @@ process.on("unhandledRejection", (err: any) => {
 	process.exit(1);
 });
 
-const { getModels, getProviders } = await import("@mariozechner/pi-ai");
+const { getModels, getProviders, completeSimple } = await import("@mariozechner/pi-ai");
 const { PythonRepl } = await import("./repl.js");
 const { runRlmLoop } = await import("./rlm.js");
 const { loadConfig } = await import("./config.js");
@@ -981,14 +981,58 @@ async function runQuery(query: string): Promise<void> {
 	isRunning = true;
 	queryCount++;
 	const startTime = Date.now();
-	let subQueryCount = 0;
 	const spinner = new Spinner();
 
-	// Header — just model + context info, query is already visible on the prompt line
-	const ctxLabel = isDirectMode
-		? `${c.dim}direct mode${c.reset}`
-		: `${c.dim}${(effectiveContext.length / 1024).toFixed(1)}KB context${c.reset}`;
-	console.log(`\n  ${c.dim}${currentModelId}${c.reset} · ${ctxLabel}\n`);
+	// ── Direct LLM mode (no context loaded) ──────────────────────────────
+	if (isDirectMode) {
+		console.log(`\n  ${c.dim}${currentModelId}${c.reset} · ${c.dim}llm${c.reset}\n`);
+		const ac = new AbortController();
+		activeAc = ac;
+		activeSpinner = spinner;
+
+		try {
+			spinner.start("Thinking");
+			const response = await Promise.race([
+				completeSimple(currentModel, {
+					systemPrompt: "You are a helpful assistant. Be concise but thorough.",
+					messages: [{ role: "user" as const, content: query, timestamp: Date.now() }],
+				}),
+				new Promise<never>((_, reject) => {
+					ac.signal.addEventListener("abort", () => reject(new Error("Aborted")));
+				}),
+			]);
+			spinner.stop();
+
+			const answer = typeof response === "string" ? response : String(response);
+			const totalSec = ((Date.now() - startTime) / 1000).toFixed(1);
+
+			const answerLines = answer.split("\n");
+			console.log(boxTop(`✔ Response  ${c.dim}${totalSec}s`, c.green));
+			for (const line of answerLines) {
+				for (const chunk of wrapText(line, MAX_CONTENT_W)) {
+					console.log(boxLine(chunk, c.green));
+				}
+			}
+			console.log(boxBottom(c.green));
+			console.log();
+		} catch (err: any) {
+			spinner.stop();
+			const msg = err?.message || String(err);
+			if (err?.name !== "AbortError" && !msg.includes("Aborted")) {
+				console.log(`\n  ${c.red}Error: ${msg}${c.reset}\n`);
+			}
+		} finally {
+			spinner.stop();
+			activeAc = null;
+			activeSpinner = null;
+			isRunning = false;
+		}
+		return;
+	}
+
+	// ── RLM mode (context loaded) ────────────────────────────────────────
+	let subQueryCount = 0;
+	console.log(`\n  ${c.dim}${currentModelId}${c.reset} · ${c.dim}${(effectiveContext.length / 1024).toFixed(1)}KB context${c.reset}\n`);
 
 	// Trajectory bookkeeping
 	const trajectory: any = {
