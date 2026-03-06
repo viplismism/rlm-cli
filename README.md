@@ -21,15 +21,32 @@ Instead of dumping a huge context into a single LLM call, RLM lets the model wri
 npm install -g rlm-cli
 ```
 
-Set your API key:
+Requires **Node.js >= 20** and **Python 3**.
+
+Run `rlm` — first launch will prompt you to pick a provider and enter your API key. It's saved to `~/.rlm/credentials` so you only do this once.
+
+### Supported Providers
+
+| Provider | Env Variable | Default Model |
+|----------|-------------|---------------|
+| **Anthropic** | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
+| **OpenAI** | `OPENAI_API_KEY` | `gpt-4o` |
+| **Google** | `GEMINI_API_KEY` | `gemini-2.5-flash` |
+
+You can also set keys manually instead of using the first-run setup:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
 # or
 export OPENAI_API_KEY=sk-...
+# or
+export GEMINI_API_KEY=AIza...
 ```
 
-That's it. Run `rlm` and you're in.
+Keys are loaded from (highest priority wins):
+1. Shell environment variables
+2. `.env` file in project root
+3. `~/.rlm/credentials`
 
 ### From Source
 
@@ -39,12 +56,6 @@ cd rlm-cli
 npm install
 npm run build
 npm link
-```
-
-Create a `.env` file in the project root with your API key:
-
-```bash
-cp .env.example .env
 ```
 
 ## Usage
@@ -57,11 +68,12 @@ rlm
 
 This is the main way to use it. You get a persistent session where you can:
 
-- Load context from a file, URL, or by pasting text directly
-- Ask questions and watch the RLM loop run — you'll see the code it writes, the output, sub-queries, everything in real-time
+- Load context from files, directories, globs, URLs, or by pasting text
+- Ask questions and watch the RLM loop run — code, output, sub-queries, all in real-time
+- Switch models and providers on the fly
 - All runs are saved as trajectory files you can browse later
 
-You don't even need to load context first — just type a query directly and RLM will use your question as the context:
+You don't need to load context first — just type a query directly:
 
 ```bash
 > what are the top 5 sorting algorithms and their time complexities?
@@ -81,13 +93,9 @@ Or set context first, then ask multiple questions:
 > find all the error handling patterns
 ```
 
-**Ctrl+C** stops the current query. **Ctrl+C twice** exits.
-
-Type `/help` inside the terminal for all commands.
-
 ### Loading Context
 
-You can load single files, multiple files, entire directories, or glob patterns as context.
+Load single files, multiple files, directories, or glob patterns.
 
 **Single file:**
 
@@ -118,7 +126,48 @@ You can load single files, multiple files, entire directories, or glob patterns 
 > /file lib/*.{js,ts}
 ```
 
+**URLs:**
+
+```bash
+> /url https://example.com/data.txt
+```
+
+Or just paste a URL directly — it'll be fetched automatically.
+
 Safety limits: max 100 files, max 10MB total. Use `/context` to see what's loaded.
+
+### Commands
+
+```
+Loading Context
+  /file <path>              Load a single file
+  /file <p1> <p2> ...       Load multiple files
+  /file <dir>/              Load all files in a directory (recursive)
+  /file src/**/*.ts         Load files matching a glob pattern
+  /url <url>                Fetch URL as context
+  /paste                    Multi-line paste mode (type EOF to finish)
+  /context                  Show loaded context info + file list
+  /clear-context            Unload context
+
+Model & Provider
+  /model                    List models for current provider
+  /model <#|id>             Switch model by number or ID
+  /provider                 Switch provider
+
+Tools
+  /trajectories             List saved runs
+
+General
+  /clear                    Clear screen
+  /help                     Show this help
+  /quit                     Exit
+```
+
+**Tips:**
+- Just type a question — no context needed for general queries
+- Paste a URL directly to fetch it as context
+- Paste 4+ lines of text to set it as context
+- **Ctrl+C** stops a running query, **Ctrl+C twice** exits
 
 ### Single-Shot Mode
 
@@ -128,6 +177,7 @@ For scripting or one-off queries:
 rlm run --file large-file.txt "List all classes and their methods"
 rlm run --url https://example.com/data.txt "Summarize this"
 cat data.txt | rlm run --stdin "Count the errors"
+rlm run --model gpt-4o --file code.py "Find bugs"
 ```
 
 Answer goes to stdout, progress to stderr — pipe-friendly.
@@ -138,38 +188,27 @@ Answer goes to stdout, progress to stderr — pipe-friendly.
 rlm viewer
 ```
 
-Browse saved runs in a TUI. Navigate iterations, inspect the code and output at each step, drill into individual sub-queries.
+Browse saved runs in a TUI. Navigate iterations, inspect the code and output at each step, drill into individual sub-queries. Trajectories are saved to `~/.rlm/trajectories/`.
 
 ## Benchmarks
 
-Compare direct LLM vs RLM on the same query from standard long-context datasets. This runs both approaches side-by-side so you can see the difference.
-
-### Available Benchmarks
+Compare direct LLM vs RLM on the same query from standard long-context datasets.
 
 | Benchmark | Dataset | What it tests |
 |-----------|---------|---------------|
-| `oolong` | [Oolong Synth](https://huggingface.co/datasets/oolongbench/oolong-synth) | Synthetic long-context tasks: timeline ordering, user tracking, counting |
+| `oolong` | [Oolong Synth](https://huggingface.co/datasets/oolongbench/oolong-synth) | Synthetic long-context: timeline ordering, user tracking, counting |
 | `longbench` | [LongBench NarrativeQA](https://huggingface.co/datasets/THUDM/LongBench) | Reading comprehension over long narratives |
-
-### Running
 
 ```bash
 rlm benchmark oolong          # default: index 4743 (14.7MB timeline+subset counting)
 rlm benchmark longbench       # default: index 182 (205KB multi-hop narrative reasoning)
 
-# Pick a specific example from the dataset
+# Pick a specific example
 rlm benchmark oolong --idx 10
 rlm benchmark longbench --idx 50
 ```
 
 Python dependencies are auto-installed into a `.venv` on first run.
-
-Each run:
-1. Loads one example from the dataset
-2. Runs direct LLM (single prompt, no RLM)
-3. Runs RLM (iterative code execution with sub-queries)
-4. Prints both answers side-by-side with the expected answer, timing, and stats
-5. Saves a trajectory file for later inspection with `rlm viewer`
 
 ## How It Works
 
@@ -183,14 +222,14 @@ For large documents, the model typically chunks the text and runs parallel sub-q
 
 ## Configuration
 
-Edit `rlm_config.yaml` in the project root:
+Create `rlm_config.yaml` in your working directory to override defaults:
 
 ```yaml
-max_iterations: 20       # Max iterations before giving up
-max_depth: 3             # Max recursive sub-agent depth
-max_sub_queries: 50      # Max total sub-queries
-truncate_len: 5000       # Truncate REPL output beyond this
-metadata_preview_lines: 20
+max_iterations: 20       # Max iterations before giving up (1-100)
+max_depth: 3             # Max recursive sub-agent depth (1-10)
+max_sub_queries: 50      # Max total sub-queries (1-500)
+truncate_len: 5000       # Truncate REPL output beyond this (500-50000)
+metadata_preview_lines: 20  # Preview lines in context metadata (5-100)
 ```
 
 ## Project Structure
@@ -205,7 +244,7 @@ src/
   cli.ts           Single-shot CLI mode
   viewer.ts        Trajectory viewer TUI
   config.ts        Config loader
-  env.ts           .env file loader
+  env.ts           Environment variable loader
 benchmarks/
   oolong_synth.ts           Oolong Synth benchmark
   longbench_narrativeqa.ts  LongBench NarrativeQA benchmark
@@ -213,12 +252,6 @@ benchmarks/
 bin/
   rlm.mjs          Global CLI shim
 ```
-
-## Requirements
-
-- Node.js >= 20
-- Python 3
-- An API key (Anthropic, OpenAI, or OpenRouter)
 
 ## License
 

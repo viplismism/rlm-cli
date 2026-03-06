@@ -203,7 +203,7 @@ function getDefaultModelForProvider(provider: string): string | undefined {
 	return models.length > 0 ? models[0].id : undefined;
 }
 
-/** Wrap rl.question with ESC-to-cancel. Returns user input or null on ESC/empty.
+/** Wrap rl.question with ESC-to-cancel. Returns user input, empty string, or null on ESC.
  *  When secret=true, suppresses character echo (for API keys). */
 function questionWithEsc(rlInstance: readline.Interface, promptText: string, opts?: { secret?: boolean }): Promise<string | null> {
 	return new Promise((resolve) => {
@@ -234,18 +234,49 @@ function questionWithEsc(rlInstance: readline.Interface, promptText: string, opt
 				rlAny._writeToOutput = savedWrite;
 				process.stdout.write("\n");
 			}
-			resolve(escaped ? null : answer.trim() || null);
+			resolve(escaped ? null : answer.trim());
 		});
 	});
 }
 
-/** Prompt user for a provider's API key if not already set.
+/** Prompt user for a provider's API key.
+ *  If key already exists, shows masked version and allows Enter to keep it.
  *  Returns true (got key), false (empty input), or null (ESC pressed). */
 async function promptForProviderKey(
 	rlInstance: readline.Interface,
 	providerInfo: { name: string; env: string }
 ): Promise<boolean | null> {
-	if (process.env[providerInfo.env]) return true;
+	const existing = process.env[providerInfo.env];
+	if (existing) {
+		// Show masked key, let user keep or replace
+		const masked = existing.slice(0, 4) + "●".repeat(Math.min(existing.length - 4, 12));
+		const rawKey = await questionWithEsc(rlInstance, `  ${c.cyan}${providerInfo.env}${c.reset} ${c.dim}[${masked}] Enter to keep:${c.reset} `, { secret: true });
+		if (rawKey === null) return null; // ESC
+		if (!rawKey) return true; // Enter → keep existing key
+		// Fall through to save new key
+		const key = rawKey.replace(/[\r\n\x00-\x1f]/g, "").trim();
+		if (!key) return true;
+		process.env[providerInfo.env] = key;
+		const credPath = path.join(RLM_HOME, "credentials");
+		try {
+			if (!fs.existsSync(RLM_HOME)) fs.mkdirSync(RLM_HOME, { recursive: true });
+			if (fs.existsSync(credPath)) {
+				const content = fs.readFileSync(credPath, "utf-8");
+				const filtered = content.split("\n").filter((l) => {
+					const t = l.trim();
+					if (t.startsWith("export ")) return !t.slice(7).startsWith(providerInfo.env + "=");
+					return !t.startsWith(providerInfo.env + "=");
+				}).join("\n");
+				fs.writeFileSync(credPath, filtered.endsWith("\n") ? filtered : filtered + "\n");
+			}
+			fs.appendFileSync(credPath, `${providerInfo.env}=${key}\n`);
+			try { fs.chmodSync(credPath, 0o600); } catch {}
+			console.log(`\n  ${c.green}✓${c.reset} ${providerInfo.name} key updated in ${c.dim}~/.rlm/credentials${c.reset}`);
+		} catch {
+			console.log(`\n  ${c.yellow}!${c.reset} Could not save key.`);
+		}
+		return true;
+	}
 
 	const rawKey = await questionWithEsc(rlInstance, `  ${c.cyan}${providerInfo.env}:${c.reset} `, { secret: true });
 	if (rawKey === null) return null; // ESC
@@ -391,7 +422,7 @@ ${c.bold}@ Shorthand${c.reset}  ${c.dim}(inline file loading)${c.reset}
 ${c.bold}Model & Provider${c.reset}
   ${c.cyan}/model${c.reset}                    List models for current provider
   ${c.cyan}/model${c.reset} <#|id>              Switch model by number or ID
-  ${c.cyan}/provider${c.reset}                 Switch provider (Anthropic, OpenAI, Google, ...)
+  ${c.cyan}/provider${c.reset}                 Switch provider (Anthropic, OpenAI, Google)
 
 ${c.bold}Tools${c.reset}
   ${c.cyan}/trajectories${c.reset}             List saved runs
@@ -1490,12 +1521,10 @@ async function interactive(): Promise<void> {
 						const p = SETUP_PROVIDERS[i];
 						const isCurrent = p.piProvider === curProvider;
 						const dot = isCurrent ? `${c.green}●${c.reset}` : ` `;
-						// Only show ✓ for non-current providers that have a key
-						const hasKey = !isCurrent && process.env[p.env] ? `${c.green}✓${c.reset}` : ` `;
 						const label = isCurrent
 							? `${c.cyan}${p.name}${c.reset} ${c.dim}(${p.label})${c.reset}`
 							: `${p.name} ${c.dim}(${p.label})${c.reset}`;
-						console.log(`  ${c.dim}${i + 1}${c.reset} ${dot}${hasKey} ${label}`);
+						console.log(`  ${c.dim}${i + 1}${c.reset} ${dot} ${label}`);
 					}
 					console.log();
 
