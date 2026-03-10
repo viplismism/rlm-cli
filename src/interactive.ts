@@ -415,7 +415,7 @@ function printWelcome(): void {
 	const cwdShort = process.cwd().replace(os.homedir(), "~");
 	console.log(`  ${c.dim}${cwdShort}${c.reset}`);
 	printStatusLine();
-	console.log(`  ${c.dim}max ${config.max_iterations} iters · depth ${config.max_depth} · ${config.max_sub_queries} sub-queries · /help${c.reset}\n`);
+	console.log(`  ${c.dim}max ${config.max_iterations} iters · ${config.max_sub_queries} sub-queries · /help${c.reset}\n`);
 }
 
 // ── Help ────────────────────────────────────────────────────────────────────

@@ -249,7 +249,7 @@ console.log(`  ${c.dim}Expected: ${example.answer}${c.reset}\n`);
 
 // ── Resolve model ──────────────────────────────────────────────────────────
 
-const modelId = process.env.RLM_MODEL || "claude-sonnet-4-5-20250929";
+const modelId = process.env.RLM_MODEL || "claude-sonnet-4-6";
 let model: Model<Api> | undefined;
 for (const provider of getProviders()) {
 	for (const m of getModels(provider)) {

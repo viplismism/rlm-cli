@@ -204,7 +204,9 @@ export class PythonRepl {
 		}
 
 		if (msg.type === "llm_query") {
-			this.handleLlmQueryMessage(msg as LlmQueryMessage).catch(() => {});
+			this.handleLlmQueryMessage(msg as LlmQueryMessage).catch((err) => {
+				process.stderr.write(`[rlm] llm_query handler error: ${err?.message || err}\n`);
+			});
 			return;
 		}
 

@@ -23,15 +23,21 @@ import io
 import traceback
 import asyncio
 import threading
+import queue
 
 # Real stdio handles — saved before exec() can redirect sys.stdout/sys.stderr.
 _real_stdout = sys.stdout
 _real_stdin = sys.stdin
 
-# Lock + pending results for thread-safe concurrent llm_query calls
-_io_lock = threading.Lock()
+# Lock for stdout writes only
+_write_lock = threading.Lock()
+
+# Per-request events and results for concurrent llm_query calls
 _pending_results: dict[str, threading.Event] = {}
 _result_store: dict[str, str] = {}
+
+# Queue for commands (exec, set_context, etc.) dispatched by the reader thread
+_command_queue: queue.Queue = queue.Queue()
 
 # Will be set by the TypeScript host before each execution
 context: str = ""
@@ -59,26 +65,49 @@ def FINAL_VAR(x):
     __final_result__ = str(x) if x is not None else None
 
 
-def _dispatch_stdin_line(line: str) -> None:
-    """Route an incoming JSON message to the correct waiting llm_query thread."""
-    try:
-        msg = json.loads(line)
-    except json.JSONDecodeError:
-        return
-    if msg.get("type") == "shutdown":
-        sys.exit(0)
-    if msg.get("type") == "llm_result":
-        rid = msg.get("id", "")
-        if rid in _pending_results:
-            _result_store[rid] = msg.get("result", "")
-            _pending_results[rid].set()
+def _stdin_reader_loop() -> None:
+    """Dedicated thread: reads all stdin lines and dispatches them.
+
+    - llm_result messages go directly to waiting llm_query threads
+    - All other messages (exec, set_context, etc.) go to _command_queue
+    """
+    while True:
+        try:
+            line = _real_stdin.readline()
+        except Exception:
+            break
+        if not line:
+            # stdin closed — wake all pending threads and signal main loop
+            for event in list(_pending_results.values()):
+                event.set()
+            _command_queue.put(None)
+            break
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        msg_type = msg.get("type")
+        if msg_type == "llm_result":
+            rid = msg.get("id", "")
+            if rid in _pending_results:
+                _result_store[rid] = msg.get("result", "")
+                _pending_results[rid].set()
+        elif msg_type == "shutdown":
+            _command_queue.put(None)
+            break
+        else:
+            _command_queue.put(msg)
 
 
 def llm_query(sub_context: str, instruction: str = "") -> str:
     """Send a sub-context and instruction to the parent LLM and return the response.
 
     Thread-safe: multiple concurrent calls (via async_llm_query + asyncio.gather)
-    are dispatched correctly using per-request events.
+    run in parallel — a dedicated reader thread dispatches results.
     """
     if not instruction:
         instruction = ""
@@ -93,21 +122,12 @@ def llm_query(sub_context: str, instruction: str = "") -> str:
         "instruction": instruction,
         "id": request_id,
     }
-    with _io_lock:
+    with _write_lock:
         _real_stdout.write(json.dumps(request) + "\n")
         _real_stdout.flush()
 
-    # Read stdin lines and dispatch until OUR result arrives
-    while not event.is_set():
-        with _io_lock:
-            line = _real_stdin.readline()
-        if not line:
-            _pending_results.pop(request_id, None)
-            raise RuntimeError("REPL stdin closed unexpectedly")
-        line = line.strip()
-        if not line:
-            continue
-        _dispatch_stdin_line(line)
+    # Wait for our result (reader thread dispatches it)
+    event.wait()
 
     _pending_results.pop(request_id, None)
     return _result_store.pop(request_id, "")
@@ -187,23 +207,17 @@ def _execute_code(code: str) -> None:
         "has_final": __final_result__ is not None,
         "final_value": str(__final_result__) if __final_result__ is not None else None,
     }
-    _real_stdout.write(json.dumps(result) + "\n")
-    _real_stdout.flush()
+    with _write_lock:
+        _real_stdout.write(json.dumps(result) + "\n")
+        _real_stdout.flush()
 
 
 def _main_loop() -> None:
-    """Read execution requests from stdin in a loop."""
+    """Process commands from the queue (fed by the stdin reader thread)."""
     while True:
-        line = _real_stdin.readline()
-        if not line:
+        msg = _command_queue.get()
+        if msg is None:
             break
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            msg = json.loads(line)
-        except json.JSONDecodeError:
-            continue
 
         if msg.get("type") == "exec":
             _execute_code(msg.get("code", ""))
@@ -211,20 +225,25 @@ def _main_loop() -> None:
             global context
             context = msg.get("value", "")
             ack = {"type": "context_set"}
-            _real_stdout.write(json.dumps(ack) + "\n")
-            _real_stdout.flush()
+            with _write_lock:
+                _real_stdout.write(json.dumps(ack) + "\n")
+                _real_stdout.flush()
         elif msg.get("type") == "reset_final":
             global __final_result__
             __final_result__ = None
             ack = {"type": "final_reset"}
-            _real_stdout.write(json.dumps(ack) + "\n")
-            _real_stdout.flush()
-        elif msg.get("type") == "shutdown":
-            break
+            with _write_lock:
+                _real_stdout.write(json.dumps(ack) + "\n")
+                _real_stdout.flush()
 
 
 if __name__ == "__main__":
     ready = {"type": "ready"}
     _real_stdout.write(json.dumps(ready) + "\n")
     _real_stdout.flush()
+
+    # Start dedicated stdin reader thread
+    reader = threading.Thread(target=_stdin_reader_loop, daemon=True)
+    reader.start()
+
     _main_loop()

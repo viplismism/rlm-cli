@@ -17,6 +17,10 @@ CLI for **Recursive Language Models** — based on the [RLM paper](https://arxiv
 
 Instead of dumping a huge context into a single LLM call, RLM lets the model write Python code to process it — slicing, chunking, running sub-queries on pieces, and building up an answer across multiple iterations.
 
+<p align="center">
+  <img src="demo.png" alt="rlm-cli demo" width="750">
+</p>
+
 ## Install
 
 ```bash
