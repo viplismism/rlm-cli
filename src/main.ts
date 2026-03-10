@@ -30,9 +30,10 @@ const HELP = `
   --verbose        Show iteration progress
 
 \x1b[1mCONFIGURATION\x1b[0m
-  .env file:
+  .env file (pick one provider):
     ANTHROPIC_API_KEY=sk-ant-...
-    RLM_MODEL=claude-sonnet-4-6
+    OPENAI_API_KEY=sk-...
+    GEMINI_API_KEY=AIza...
 
   rlm_config.yaml:
     max_iterations: 20

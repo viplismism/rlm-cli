@@ -1233,38 +1233,6 @@ async function runQuery(query: string): Promise<void> {
 
 // ── @file shorthand and auto-detect file paths ─────────────────────────────
 
-function extractFilePath(input: string): { filePath: string | null; query: string } {
-	const atMatch = input.match(/@(\S+)/);
-	if (atMatch) {
-		const filePath = path.resolve(expandTilde(atMatch[1]));
-		if (fs.existsSync(filePath)) {
-			const query = input.replace(atMatch[0], "").trim();
-			return { filePath, query };
-		}
-	}
-
-	// Unix absolute path (/...) or Windows absolute path (C:\...)
-	const absPathMatch = input.match(/((?:\/|[A-Za-z]:[\\\/])[^\s]+)/);
-	if (absPathMatch) {
-		const filePath = absPathMatch[1];
-		if (fs.existsSync(filePath)) {
-			const query = input.replace(absPathMatch[1], "").trim();
-			return { filePath, query };
-		}
-	}
-
-	// Relative path with forward or back slashes
-	const relPathMatch = input.match(/([\w\-\.]+[\/\\][\w\-\.\/\\]+\.\w{2,6})/);
-	if (relPathMatch) {
-		const filePath = path.resolve(relPathMatch[1]);
-		if (fs.existsSync(filePath)) {
-			const query = input.replace(relPathMatch[1], "").trim();
-			return { filePath, query };
-		}
-	}
-
-	return { filePath: null, query: input };
-}
 
 function expandAtFiles(input: string): string {
 	// Extract all @tokens from input

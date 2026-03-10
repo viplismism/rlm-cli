@@ -789,7 +789,7 @@ async function main(): Promise<void> {
 		const files = listTrajectories();
 		if (files.length === 0) {
 			console.error(
-				`${c.red}No trajectory files found in ./trajectories/${c.reset}\nRun a query first to generate trajectories.`,
+				`${c.red}No trajectory files found in ~/.rlm/trajectories/${c.reset}\nRun a query first to generate trajectories.`,
 			);
 			process.exit(1);
 		}

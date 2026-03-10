@@ -3,14 +3,14 @@
  * Standalone RLM CLI — run Recursive Language Model queries from the terminal.
  *
  * Usage:
- *   npx tsx src/cli.ts --model claude-sonnet-4-20250514 --file large-file.txt "What are the main themes?"
- *   npx tsx src/cli.ts --model claude-sonnet-4-20250514 --url https://example.com/big.txt "Summarize this"
- *   cat data.txt | npx tsx src/cli.ts --model claude-sonnet-4-20250514 --stdin "Count the errors"
+ *   npx tsx src/cli.ts --file large-file.txt "What are the main themes?"
+ *   npx tsx src/cli.ts --url https://example.com/big.txt "Summarize this"
+ *   cat data.txt | npx tsx src/cli.ts --stdin "Count the errors"
  *
- * Environment:
- *   ANTHROPIC_API_KEY — required for Anthropic models
- *   OPENAI_API_KEY    — required for OpenAI models
- *   (etc. per @mariozechner/pi-ai provider)
+ * Environment (pick one):
+ *   ANTHROPIC_API_KEY — for Anthropic models
+ *   OPENAI_API_KEY    — for OpenAI models
+ *   GEMINI_API_KEY    — for Google models
  */
 
 import "./env.js";

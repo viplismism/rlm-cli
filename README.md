@@ -1,6 +1,8 @@
 # rlm-cli
 
 [![npm version](https://img.shields.io/npm/v/rlm-cli.svg)](https://www.npmjs.com/package/rlm-cli)
+[![license](https://img.shields.io/npm/l/rlm-cli.svg)](https://github.com/viplismism/rlm-cli/blob/main/LICENSE)
+[![node](https://img.shields.io/node/v/rlm-cli.svg)](https://nodejs.org/)
 
 ```
                      ██████╗ ██╗     ███╗   ███╗
