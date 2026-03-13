@@ -129,6 +129,7 @@ const PROVIDER_KEYS: Record<string, string> = {
 	anthropic: "ANTHROPIC_API_KEY",
 	openai: "OPENAI_API_KEY",
 	google: "GEMINI_API_KEY",
+	openrouter: "OPENROUTER_API_KEY",
 };
 
 // User-facing provider list for setup & /provider command
@@ -136,6 +137,7 @@ const SETUP_PROVIDERS = [
 	{ name: "Anthropic", label: "Claude", env: "ANTHROPIC_API_KEY", piProvider: "anthropic" },
 	{ name: "OpenAI", label: "GPT", env: "OPENAI_API_KEY", piProvider: "openai" },
 	{ name: "Google", label: "Gemini", env: "GEMINI_API_KEY", piProvider: "google" },
+	{ name: "OpenRouter", label: "Multi-provider", env: "OPENROUTER_API_KEY", piProvider: "openrouter" },
 ];
 
 function providerEnvKey(provider: string): string {
@@ -189,6 +191,7 @@ const PROVIDER_DEFAULT_MODELS: Record<string, string> = {
 	anthropic: "claude-sonnet-4-6",
 	openai: "gpt-4o",
 	google: "gemini-2.5-flash",
+	openrouter: "auto",
 };
 
 /** Returns the recommended default model for a provider. */
@@ -441,7 +444,7 @@ ${c.bold}@ Shorthand${c.reset}  ${c.dim}(inline file loading)${c.reset}
 ${c.bold}Model & Provider${c.reset}
   ${c.cyan}/model${c.reset}                    List models for current provider
   ${c.cyan}/model${c.reset} <#|id>              Switch model by number or ID
-  ${c.cyan}/provider${c.reset}                 Switch provider (Anthropic, OpenAI, Google)
+  ${c.cyan}/provider${c.reset}                 Switch provider (Anthropic, OpenAI, Google, OpenRouter)
   ${c.cyan}/key${c.reset}                      Update an API key
 
 ${c.bold}Tools${c.reset}
