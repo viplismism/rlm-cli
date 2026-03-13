@@ -6,6 +6,9 @@
  *   1. Shell environment variables (already in process.env)
  *   2. .env in package root
  *   3. ~/.rlm/credentials — persistent keys saved by first-run setup
+ *
+ * Supported provider keys include ANTHROPIC_API_KEY, OPENAI_API_KEY,
+ * GEMINI_API_KEY, and OPENROUTER_API_KEY.
  */
 
 import * as fs from "node:fs";
