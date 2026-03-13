@@ -1360,6 +1360,10 @@ async function interactive(): Promise<void> {
 			setupDone = true;
 		}
 		setupRl.close();
+		// Ensure stdin is resumed after closing the setup readline — some
+		// platforms/terminals pause stdin on close, preventing the main REPL
+		// readline from receiving input.
+		if (stdin.isPaused()) stdin.resume();
 	}
 
 	// Resolve model — ensure the resolved provider actually has an API key
