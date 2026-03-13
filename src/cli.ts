@@ -11,6 +11,7 @@
  *   ANTHROPIC_API_KEY — for Anthropic models
  *   OPENAI_API_KEY    — for OpenAI models
  *   GEMINI_API_KEY    — for Google models
+ *   OPENROUTER_API_KEY — for OpenRouter models
  */
 
 import "./env.js";
@@ -151,10 +152,12 @@ async function main(): Promise<void> {
 	const providerKeys: Record<string, string> = {
 		anthropic: "ANTHROPIC_API_KEY", openai: "OPENAI_API_KEY",
 		google: "GEMINI_API_KEY",
+		openrouter: "OPENROUTER_API_KEY",
 	};
 	const defaultModels: Record<string, string> = {
 		anthropic: "claude-sonnet-4-6", openai: "gpt-4o",
 		google: "gemini-2.5-flash",
+		openrouter: "auto",
 	};
 
 	// Resolve model — ensure provider has an API key
