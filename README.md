@@ -30,6 +30,7 @@ Run `rlm` — first launch will prompt you to pick a provider and enter your API
 | **Anthropic** | `ANTHROPIC_API_KEY` | `claude-sonnet-4-6` |
 | **OpenAI** | `OPENAI_API_KEY` | `gpt-4o` |
 | **Google** | `GEMINI_API_KEY` | `gemini-2.5-flash` |
+| **OpenRouter** | `OPENROUTER_API_KEY` | `auto` |
 
 You can also set keys manually instead of using the first-run setup:
 
@@ -39,6 +40,8 @@ export ANTHROPIC_API_KEY=sk-ant-...
 export OPENAI_API_KEY=sk-...
 # or
 export GEMINI_API_KEY=AIza...
+# or
+export OPENROUTER_API_KEY=sk-or-...
 ```
 
 Keys are loaded from (highest priority wins):
