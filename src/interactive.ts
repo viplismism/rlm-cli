@@ -206,37 +206,22 @@ function getDefaultModelForProvider(provider: string): string | undefined {
 	return models.length > 0 ? models[0].id : undefined;
 }
 
-/** Wrap rl.question with ESC-to-cancel. Returns user input, empty string, or null on ESC.
- *  When secret=true, suppresses character echo (for API keys). */
-function questionWithEsc(rlInstance: readline.Interface, promptText: string, opts?: { secret?: boolean }): Promise<string | null> {
+/** Wrap rl.question with ESC-to-cancel. Returns user input, empty string, or null on ESC. */
+function questionWithEsc(rlInstance: readline.Interface, promptText: string): Promise<string | null> {
 	return new Promise((resolve) => {
 		let escaped = false;
-		const rlAny = rlInstance as any;
-		let savedWrite: ((str: string) => void) | undefined;
-
-		if (opts?.secret) {
-			// Suppress readline's echo — write prompt ourselves, hide typed chars
-			savedWrite = rlAny._writeToOutput;
-			rlAny._writeToOutput = function () {};
-			process.stdout.write(promptText);
-		}
 
 		const onKeypress = (_str: string | undefined, key: { name?: string } | undefined) => {
 			if (key?.name === "escape" && !escaped) {
 				escaped = true;
 				stdin.removeListener("keypress", onKeypress);
-				if (savedWrite) rlAny._writeToOutput = savedWrite;
 				process.stdout.write("\r\x1b[2K");
 				rlInstance.write("\n");
 			}
 		};
 		stdin.on("keypress", onKeypress);
-		rlInstance.question(opts?.secret ? "" : promptText, (answer) => {
+		rlInstance.question(promptText, (answer) => {
 			stdin.removeListener("keypress", onKeypress);
-			if (savedWrite) {
-				rlAny._writeToOutput = savedWrite;
-				process.stdout.write("\n");
-			}
 			resolve(escaped ? null : answer.trim());
 		});
 	});
@@ -250,7 +235,7 @@ async function promptForProviderKey(
 ): Promise<boolean | null> {
 	if (process.env[providerInfo.env]) return true;
 
-	const rawKey = await questionWithEsc(rlInstance, `  ${c.cyan}${providerInfo.env}:${c.reset} `, { secret: true });
+	const rawKey = await questionWithEsc(rlInstance, `  ${c.cyan}${providerInfo.env}:${c.reset} `);
 	if (rawKey === null) return null; // ESC
 	if (!rawKey) return false; // empty
 
@@ -1639,7 +1624,7 @@ async function interactive(): Promise<void> {
 						break;
 					}
 					const keyProvider = SETUP_PROVIDERS[keyIdx];
-					const newKey = await questionWithEsc(rl, `  ${c.cyan}${keyProvider.env}:${c.reset} `, { secret: true });
+					const newKey = await questionWithEsc(rl, `  ${c.cyan}${keyProvider.env}:${c.reset} `);
 					if (newKey === null || !newKey) break;
 					const sanitized = newKey.replace(/[\r\n\x00-\x1f]/g, "").trim();
 					if (!sanitized) break;
