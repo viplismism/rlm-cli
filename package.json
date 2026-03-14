@@ -1,6 +1,6 @@
 {
   "name": "rlm-cli",
-  "version": "0.4.20",
+  "version": "0.4.21",
   "description": "Standalone CLI for Recursive Language Models (RLMs) — implements Algorithm 1 from arXiv:2512.24601",
   "type": "module",
   "bin": {
