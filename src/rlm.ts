@@ -156,19 +156,57 @@ FINAL(final_answer)
 \`\`\``;
 }
 
-// ── Abort helper ────────────────────────────────────────────────────────
+// ── Shared abort handler ────────────────────────────────────────────────
+
+/**
+ * Instead of adding one abort listener per concurrent promise (which triggers
+ * MaxListenersExceededWarning at 11+), we register a single listener per
+ * AbortSignal and fan-out to all pending reject callbacks.
+ */
+const pendingAborts = new Map<AbortSignal, Set<(err: Error) => void>>();
+
+function addSharedAbortHandler(signal: AbortSignal, reject: (err: Error) => void) {
+	let handlers = pendingAborts.get(signal);
+	if (!handlers) {
+		handlers = new Set();
+		pendingAborts.set(signal, handlers);
+		signal.addEventListener(
+			"abort",
+			() => {
+				const current = pendingAborts.get(signal);
+				if (current) {
+					for (const handler of current) {
+						handler(new Error("Aborted"));
+					}
+					pendingAborts.delete(signal);
+				}
+			},
+			{ once: true },
+		);
+	}
+	handlers.add(reject);
+}
+
+function removeSharedAbortHandler(signal: AbortSignal, reject: (err: Error) => void) {
+	const handlers = pendingAborts.get(signal);
+	if (handlers) {
+		handlers.delete(reject);
+		if (handlers.size === 0) {
+			pendingAborts.delete(signal);
+		}
+	}
+}
 
 /** Race a promise against an AbortSignal so Ctrl+C cancels long API calls. */
 function raceAbort<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
 	if (!signal) return promise;
 	if (signal.aborted) return Promise.reject(new Error("Aborted"));
-	let onAbort: (() => void) | undefined;
-	const abortPromise = new Promise<never>((_, reject) => {
-		onAbort = () => reject(new Error("Aborted"));
-		signal.addEventListener("abort", onAbort, { once: true });
-	});
-	return Promise.race([promise, abortPromise]).finally(() => {
-		if (onAbort) signal.removeEventListener("abort", onAbort);
+
+	return new Promise<T>((resolve, reject) => {
+		addSharedAbortHandler(signal, reject);
+		promise.then(resolve).catch(reject).finally(() => {
+			removeSharedAbortHandler(signal, reject);
+		});
 	});
 }
 
