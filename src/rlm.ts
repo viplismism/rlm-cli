@@ -22,6 +22,12 @@ import {
 import type { ExecResult, PythonRepl } from "./repl.js";
 import { loadConfig, type RlmConfig } from "./config.js";
 
+/** Wrapper that injects a placeholder apiKey for local providers that don't need one (e.g. Ollama). */
+function callModel(model: Model<Api>, context: Parameters<typeof completeSimple>[1]) {
+	const apiKey = (model.provider as string) === "ollama" ? "ollama" : undefined;
+	return completeSimple(model, context, apiKey ? { apiKey } : undefined);
+}
+
 // ── Load config ─────────────────────────────────────────────────────────────
 
 const config = loadConfig();
@@ -32,6 +38,8 @@ export interface RlmOptions {
 	context: string;
 	query: string;
 	model: Model<Api>;
+	/** Optional cheaper model used for sub-queries. Falls back to `model` if not set. */
+	subModel?: Model<Api>;
 	repl: PythonRepl;
 	signal?: AbortSignal;
 	onProgress?: (info: RlmProgress) => void;
@@ -72,87 +80,114 @@ export interface RlmResult {
 	iterations: number;
 	totalSubQueries: number;
 	completed: boolean;
+	/** Approximate token counts (root model only; sub-queries not tracked by all providers) */
+	inputTokens?: number;
+	outputTokens?: number;
 }
 
-// ── System prompt (inspired by fast-rlm) ────────────────────────────────────
+// ── System prompt (aligned with paper Appendix C) ───────────────────────────
 
-function buildSystemPrompt(): string {
-	return `You are a Recursive Language Model (RLM) agent. You process large contexts by writing Python code that runs in a persistent REPL.
+function buildSystemPrompt(opts?: {
+	iteration?: number;
+	maxIterations?: number;
+	subQueriesUsed?: number;
+	maxSubQueries?: number;
+	hasSubModel?: boolean;
+}): string {
+	const {
+		iteration = 1,
+		maxIterations = config.max_iterations,
+		subQueriesUsed = 0,
+		maxSubQueries = config.max_sub_queries,
+		hasSubModel = false,
+	} = opts ?? {};
+
+	const budgetLine = `You have ${maxIterations - iteration + 1} iteration(s) remaining and ${maxSubQueries - subQueriesUsed} sub-query call(s) remaining out of ${maxSubQueries} total.`;
+	const subModelNote = hasSubModel
+		? "Sub-queries use a smaller, faster model — they are cheap. Use them liberally for chunking and aggregation."
+		: "Sub-queries use the same model as the root — be strategic and avoid excessive calls.";
+
+	return `You are a Recursive Language Model (RLM) agent. You process arbitrarily large contexts by writing Python code in a persistent REPL.
+
+## Budget
+${budgetLine}
+${subModelNote}
 
 ## Available in the REPL
 
-1. A \`context\` variable containing the full input text (may be very large). You should check the content of the \`context\` variable to understand what you are working with.
+1. \`context\` — the full input text loaded as a string variable (may be very large; do NOT copy it into your answer).
 
-2. A \`llm_query(sub_context, instruction)\` function that sends a sub-piece of the context to an LLM with an instruction and returns the response. Use this for summarization, extraction, classification, etc. on chunks. For parallel queries, use \`async_llm_query()\` with \`asyncio.gather()\`.
+2. \`llm_query(sub_context, instruction)\` — sends a sub-string of context plus an instruction to an LLM and returns its text response. Use for summarization, extraction, classification, and aggregation on chunks.
+   For parallel queries: \`async_llm_query(sub_context, instruction)\` with \`asyncio.gather()\`.
 
-3. Two functions to return your answer:
-   - \`FINAL("your answer")\` — provide the answer as a string
-   - \`FINAL_VAR(variable)\` — return a variable you built up in the REPL
+3. \`FINAL("answer")\` — sets the final answer and terminates the loop.
+   \`FINAL_VAR(variable)\` — returns a variable you built up in the REPL as the final answer.
 
-## Rules
+## Core Rules
 
-1. Write valid Python 3 code. You have access to the standard library.
-2. Use \`print()\` to output metadata/intermediate results visible in the next iteration.
-3. Use \`len(context)\` and slicing to understand the context size before processing.
-4. For large contexts, split into chunks and use \`llm_query()\` on each chunk, then aggregate.
-5. Call \`FINAL("answer")\` or \`FINAL_VAR(var)\` only when you have a complete answer.
-6. Do NOT call FINAL prematurely — if you need more iterations, just print your intermediate state.
-7. Be efficient: minimize the number of \`llm_query()\` calls by using smart chunking.
-8. Print output will be truncated to last ${config.truncate_len} characters. Keep printed output concise.
+1. Write valid Python 3. The standard library is available.
+2. Use \`print()\` for intermediate output — it is fed back as context in the next iteration (truncated to last ${config.truncate_len} chars).
+3. Use \`len(context)\` and slicing. Never load the full context into your reply.
+4. For large contexts: split into chunks → \`llm_query()\` each → aggregate → FINAL.
+5. Use \`FINAL()\` only when you have a complete, high-quality answer. Print it first to verify.
+6. Do NOT rewrite or delete existing REPL variables — the REPL is persistent like a Jupyter notebook.
+7. Prefer \`asyncio.gather()\` for independent parallel sub-queries to reduce wall-clock time.
 
-## How to control sub-agent behavior
+## Sub-query best practices (key to RLM performance)
 
-- When calling \`llm_query()\`, give clear instructions at the beginning of the context. If you only pass context without instructions, the sub-agent cannot do its task.
-- To extract data verbatim: instruct the sub-agent to use \`FINAL_VAR\` and slice important sections.
-- To summarize or analyze: instruct the sub-agent to explore and generate the answer.
-- Help sub-agents by describing the data format (dict, list, etc.) — clarity is important!
-
-## Important notes
-
-- This is a multi-turn environment. You do NOT need to answer in one shot.
-- Before returning via FINAL, it is advisable to print the answer first to inspect formatting.
-- The REPL persists state like a Jupyter notebook — past variables and code are maintained. Do NOT rewrite old code or accidentally delete the \`context\` variable.
-- You will only see truncated outputs, so use \`llm_query()\` for semantic analysis of large text.
-- You can use variables as buffers to build up your final answer across iterations.
+- **Always include the query/task inside the instruction**, not just raw context. The sub-agent only sees what you give it.
+- Pass precise slices: \`context[start:end]\` rather than the entire context.
+- Use regex or string operations first to filter before calling \`llm_query()\` — this reduces cost significantly.
+- For aggregation: collect results in a list, then call \`llm_query("\n".join(results), "Synthesize...")\`.
+- For classification/extraction over many items: batch multiple items per sub-query call.
+- Store sub-query results in REPL variables for use across iterations.
 
 ## Output format
 
-Respond with ONLY a Python code block. No explanation before or after.
+Respond with ONLY a Python code block — no text before or after.
 
 \`\`\`python
-# Your working python code
-print(f"Context length: {len(context)} chars")
+# Your code here
 \`\`\`
 
-## Example strategies
+## Strategies
 
-**Chunking for large contexts:**
+**Filter then chunk (saves sub-query budget):**
 \`\`\`python
-chunk_size = len(context) // 5
-buffers = []
-for i in range(5):
-    start = i * chunk_size
-    end = (i + 1) * chunk_size if i < 4 else len(context)
-    chunk = context[start:end]
-    result = llm_query(chunk, f"Extract key information relevant to: {query}")
-    buffers.append(result)
-    print(f"Chunk {i+1}/5 done: {len(result)} chars")
+import re
+# First filter with regex — free, no LLM calls needed
+relevant = [line for line in context.splitlines() if re.search(r'keyword', line, re.I)]
+print(f"Filtered to {len(relevant)} relevant lines out of {context.count(chr(10))} total")
 \`\`\`
 
-**Parallel queries with asyncio:**
+**Chunked processing:**
+\`\`\`python
+lines = context.splitlines()
+chunk_size = 200  # lines per chunk
+chunks = ["\n".join(lines[i:i+chunk_size]) for i in range(0, len(lines), chunk_size)]
+results = []
+for i, chunk in enumerate(chunks):
+    r = llm_query(chunk, "Extract all dates and events mentioned. Return as JSON list.")
+    results.append(r)
+    print(f"Chunk {i+1}/{len(chunks)} → {len(r)} chars")
+\`\`\`
+
+**Parallel sub-queries (faster):**
 \`\`\`python
 import asyncio
-tasks = []
-for i, chunk in enumerate(chunks):
-    tasks.append(async_llm_query(chunk, f"Summarize chunk {i}"))
+tasks = [async_llm_query(chunk, "Summarize the key facts") for chunk in chunks]
 results = await asyncio.gather(*tasks)
+combined = "\n".join(results)
+final = llm_query(combined, f"Given these summaries, answer: {query}")
+FINAL(final)
 \`\`\`
 
-**Building up a final answer:**
+**Building answer across iterations:**
 \`\`\`python
-# After collecting all results in a buffer
-final_answer = llm_query("\\n".join(buffers), f"Synthesize these summaries to answer: {query}")
-FINAL(final_answer)
+# Iteration N: collect and store
+collected_results = results  # from previous iterations stored in REPL
+# Last iteration: synthesize
+FINAL_VAR(llm_query("\n".join(collected_results), f"Answer the query: {query}"))
 \`\`\``;
 }
 
@@ -271,15 +306,27 @@ function truncateOutput(text: string): string {
 // ── Main loop ───────────────────────────────────────────────────────────────
 
 export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
-	const { context, query, model, repl, signal, onProgress, onSubQueryStart, onSubQuery } = options;
+	const { context, query, model, subModel, repl, signal, onProgress, onSubQueryStart, onSubQuery } = options;
+
+	// Use subModel for sub-queries if provided; fall back to root model
+	const subCallModel = subModel ?? model;
 
 	let totalSubQueries = 0;
 	let iterationSubQueries = 0;
+	let totalInputTokens = 0;
+	let totalOutputTokens = 0;
+
+	// depth tracks recursion level; currently max_depth = 1 (sub-calls are flat LLMs, not nested RLMs)
+	const currentDepth = 0;
 
 	const llmQueryHandler = async (subContext: string, instruction: string) => {
 		if (signal?.aborted) throw new Error("Aborted");
 		if (totalSubQueries >= config.max_sub_queries) {
-			return `[ERROR] Maximum sub-query limit (${config.max_sub_queries}) reached. Call FINAL() with your best answer.`;
+			return `[ERROR] Maximum sub-query limit (${config.max_sub_queries}) reached. Call FINAL() with your best answer now.`;
+		}
+		// Depth check: sub-queries are always depth+1; we cap at max_depth
+		if (currentDepth >= config.max_depth) {
+			return `[ERROR] Maximum recursion depth (${config.max_depth}) reached. Call FINAL() with your best answer now.`;
 		}
 		++totalSubQueries;
 		const queryIndex = ++iterationSubQueries;
@@ -292,8 +339,8 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 		});
 
 		const response = await raceAbort(
-			completeSimple(model, {
-				systemPrompt: `You are a helpful assistant. Answer the user's question based on the provided context. Respond in natural language (not code). Be concise but thorough.`,
+			callModel(subCallModel, {
+				systemPrompt: `You are a helpful assistant. Answer the user's question based on the provided context. Be concise but thorough. Do not write code — respond in natural language.`,
 				messages: [
 					{
 						role: "user",
@@ -307,6 +354,14 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 
 		const textParts = response.content.filter((b): b is TextContent => b.type === "text").map((b) => b.text);
 		const result = textParts.join("\n");
+
+		// Track tokens if provider returns them
+		if ("inputTokens" in response && typeof response.inputTokens === "number") {
+			totalInputTokens += response.inputTokens;
+		}
+		if ("outputTokens" in response && typeof response.outputTokens === "number") {
+			totalOutputTokens += response.outputTokens;
+		}
 
 		onSubQuery?.({
 			index: queryIndex,
@@ -358,14 +413,22 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 			subQueries: totalSubQueries,
 			phase: "generating_code",
 			userMessage: userMsgText,
-			systemPrompt: iteration === 1 ? buildSystemPrompt() : undefined,
+			systemPrompt: iteration === 1 ? buildSystemPrompt({ iteration, maxIterations: config.max_iterations, subQueriesUsed: totalSubQueries, maxSubQueries: config.max_sub_queries, hasSubModel: !!subModel }) : undefined,
+		});
+
+		const systemPrompt = buildSystemPrompt({
+			iteration,
+			maxIterations: config.max_iterations,
+			subQueriesUsed: totalSubQueries,
+			maxSubQueries: config.max_sub_queries,
+			hasSubModel: !!subModel,
 		});
 
 		let response;
 		try {
 			response = await raceAbort(
-				completeSimple(model, {
-					systemPrompt: buildSystemPrompt(),
+				callModel(model, {
+					systemPrompt,
 					messages: conversationHistory,
 				}),
 				signal,
@@ -385,6 +448,14 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 
 		if (signal?.aborted) {
 			return { answer: "[Aborted]", iterations: iteration, totalSubQueries, completed: false };
+		}
+
+		// Track root model token usage
+		if ("inputTokens" in response && typeof response.inputTokens === "number") {
+			totalInputTokens += response.inputTokens;
+		}
+		if ("outputTokens" in response && typeof response.outputTokens === "number") {
+			totalOutputTokens += response.outputTokens;
 		}
 
 		// Surface API errors — bail immediately on unrecoverable errors
@@ -502,6 +573,8 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 				iterations: iteration,
 				totalSubQueries,
 				completed: true,
+				inputTokens: totalInputTokens || undefined,
+				outputTokens: totalOutputTokens || undefined,
 			};
 		}
 
@@ -533,5 +606,7 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 		iterations: config.max_iterations,
 		totalSubQueries,
 		completed: false,
+		inputTokens: totalInputTokens || undefined,
+		outputTokens: totalOutputTokens || undefined,
 	};
 }

@@ -14,7 +14,15 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as readline from "node:readline";
 import { stdin, stdout } from "node:process";
-
+import { fileURLToPath } from "node:url";
+import {
+	fetchOllamaModels, createOllamaModel, formatOllamaSize, OLLAMA_DEFAULT_BASE_URL,
+} from "./ollama.js";
+import {
+	RESET, BOLD, DIM,
+	AMBER, AMBER_DIM, SAGE, ICE, LAVENDER, STONE, ASH, DARK_ASH, ROSE,
+	paint, printPanel,
+} from "./colors.js";
 // Global error handlers — prevent raw stack traces from leaking to terminal
 process.on("uncaughtException", (err) => {
 	console.error(`\n  \x1b[31mUnexpected error: ${err.message}\x1b[0m\n`);
@@ -38,19 +46,27 @@ const config = loadConfig();
 // ── ANSI helpers ────────────────────────────────────────────────────────────
 
 const c = {
-	reset: "\x1b[0m",
-	bold: "\x1b[1m",
-	dim: "\x1b[2m",
-	italic: "\x1b[3m",
+	reset:     RESET,
+	bold:      BOLD,
+	dim:       DIM,
+	italic:    "\x1b[3m",
 	underline: "\x1b[4m",
-	red: "\x1b[31m",
-	green: "\x1b[32m",
-	yellow: "\x1b[33m",
-	blue: "\x1b[34m",
-	magenta: "\x1b[35m",
-	cyan: "\x1b[36m",
-	white: "\x1b[37m",
-	gray: "\x1b[90m",
+	// ── rlm identity: Electric Amber (true RGB) ────────────────────
+	accent:    AMBER,        // electric amber — primary
+	accentDim: AMBER_DIM,    // deep amber — secondary
+	result:    SAGE,         // soft green — success / result
+	code:      ICE,          // ice blue — code blocks
+	subquery:  LAVENDER,     // soft lavender — sub-queries
+	// ── semantic aliases ───────────────────────────────────────────
+	cyan:      AMBER,        // alias → accent (amber) for backward compat
+	green:     SAGE,         // alias → result
+	magenta:   LAVENDER,     // alias → subquery
+	// ── stable colors ─────────────────────────────────────────────
+	red:       ROSE,
+	yellow:    STONE,
+	blue:      ICE,
+	white:     "\x1b[37m",
+	gray:      ASH,
 	clearLine: "\x1b[2K\r",
 };
 
@@ -99,7 +115,12 @@ class Spinner {
 
 const DEFAULT_MODEL = process.env.RLM_MODEL || "claude-sonnet-4-6";
 const RLM_HOME = path.join(os.homedir(), ".rlm");
-const TRAJ_DIR = path.join(RLM_HOME, "trajectories");
+const SESSIONS_DIR = path.join(RLM_HOME, "sessions");
+
+// Per-session folder — all trajectories for this run go here
+const SESSION_ID = `session-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
+const SESSION_DIR = path.join(SESSIONS_DIR, SESSION_ID);
+
 let W = Math.min(process.stdout.columns || 80, 100);
 
 // ── Session state ───────────────────────────────────────────────────────────
@@ -116,6 +137,25 @@ let isRunning = false;
 let activeAc: AbortController | null = null;
 let activeRepl: InstanceType<typeof PythonRepl> | null = null;
 let activeSpinner: Spinner | null = null;
+
+// ── Ollama local model registry ──────────────────────────────────────────────
+
+// Maps "ollama:<name>" (and bare name) → Model for Ollama-hosted models
+const ollamaModelMap = new Map<string, Model<"openai-completions">>();
+const ollamaBaseUrl = process.env.OLLAMA_BASE_URL || OLLAMA_DEFAULT_BASE_URL;
+let ollamaSizes: Map<string, number> = new Map(); // name → bytes
+
+async function loadOllamaModels(): Promise<void> {
+	const models = await fetchOllamaModels(ollamaBaseUrl);
+	ollamaModelMap.clear();
+	ollamaSizes.clear();
+	for (const m of models) {
+		const mdl = createOllamaModel(m.name, ollamaBaseUrl);
+		ollamaModelMap.set(`ollama:${m.name}`, mdl);
+		ollamaModelMap.set(m.name, mdl); // bare name also works (colons are unique to Ollama)
+		ollamaSizes.set(m.name, m.size);
+	}
+}
 
 // ── Resolve model ───────────────────────────────────────────────────────────
 
@@ -152,12 +192,19 @@ function detectProvider(): string {
 }
 
 function hasAnyApiKey(): boolean {
-	return detectProvider() !== "unknown";
+	return detectProvider() !== "unknown" || ollamaModelMap.size > 0;
 }
 
 /** Returns the pi-ai provider name + model for a given model ID, searching all providers.
- *  Prioritises SETUP_PROVIDERS (with API key) so e.g. "gpt-4o" resolves to "openai" not "azure-openai-responses". */
+ *  Prioritises SETUP_PROVIDERS (with API key) so e.g. "gpt-4o" resolves to "openai" not "azure-openai-responses".
+ *  Checks local Ollama models first for `ollama:` prefix or bare Ollama model names. */
 function resolveModelWithProvider(modelId: string): { model: Model<Api>; provider: string } | undefined {
+	// Ollama: explicit prefix "ollama:<name>" or bare Ollama model name (e.g. "llama3.1:8b")
+	const ollamaKey = modelId.startsWith("ollama:") ? modelId : (ollamaModelMap.has(modelId) ? modelId : null);
+	if (ollamaKey) {
+		const m = ollamaModelMap.get(ollamaKey);
+		if (m) return { model: m as unknown as Model<Api>, provider: "ollama" };
+	}
 	const knownNames = new Set(SETUP_PROVIDERS.map((p) => p.piProvider));
 	let firstMatch: { model: Model<Api>; provider: string } | undefined;
 
@@ -314,36 +361,177 @@ function handleMultiLineAsContext(input: string): { context: string; query: stri
 // ── Banner ──────────────────────────────────────────────────────────────────
 
 function printBanner(): void {
+	// Wide pixel-art RLM logo — amber on black
+	const a = `${AMBER}${BOLD}`;
+	const r = RESET;
 	console.log(`
-${c.cyan}${c.bold}
-                         ██████╗ ██╗     ███╗   ███╗
-                         ██╔══██╗██║     ████╗ ████║
-                         ██████╔╝██║     ██╔████╔██║
-                         ██╔══██╗██║     ██║╚██╔╝██║
-                         ██║  ██║███████╗██║ ╚═╝ ██║
-                         ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝
-${c.reset}
-${c.dim}         Recursive Language Models — arXiv:2512.24601${c.reset}
+${a}    ██████╗ ██╗     ███╗   ███╗${r}
+${a}    ██╔══██╗██║     ████╗ ████║${r}
+${a}    ██████╔╝██║     ██╔████╔██║${r}
+${a}    ██╔══██╗██║     ██║╚██╔╝██║${r}
+${a}    ██║  ██║███████╗██║ ╚═╝ ██║${r}
+${a}    ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝${r}
+${paint("    recursive language models · arXiv:2512.24601", DIM)}
 `);
 }
 
-// ── Status line ─────────────────────────────────────────────────────────────
+// ── Version ──────────────────────────────────────────────────────────────────
+
+function loadVersion(): string {
+	try {
+		const __dir = path.dirname(fileURLToPath(import.meta.url));
+		const pkgPath = path.join(__dir, "..", "package.json");
+		const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as { version?: string };
+		return pkg.version ? `v${pkg.version}` : "";
+	} catch { return ""; }
+}
+
+// ── Welcome panel (Feynman-style two-column) ──────────────────────────────────
+
+function printWelcomePanel(): void {
+	const termW = Math.min(process.stdout.columns || 100, 110);
+	const version = loadVersion();
+
+	// Panel dimensions
+	const PANEL_W = Math.min(termW - 4, 96);  // total inner width (excl. borders)
+	const LEFT_W  = 36;                        // left column content width
+	const RIGHT_W = PANEL_W - LEFT_W - 3;     // right column (│ sep + padding)
+
+	const provider    = currentProviderName === "ollama"
+		? "Ollama (local)"
+		: (currentProviderName || detectProvider());
+	const modelShort  = currentModelId.length > LEFT_W
+		? currentModelId.slice(0, LEFT_W - 1) + "…"
+		: currentModelId;
+	const cwdShort    = process.cwd().replace(os.homedir(), "~").slice(0, LEFT_W);
+	const ctxInfo     = contextText
+		? `${(contextText.length / 1024).toFixed(1)}KB${contextSource ? ` · ${contextSource}` : ""}`
+		: "none";
+	const ctxDisplay  = ctxInfo.length > LEFT_W ? ctxInfo.slice(0, LEFT_W - 1) + "…" : ctxInfo;
+
+	// Left column rows  [label, value]
+	const subModelDisplay = config.sub_model
+		? (config.sub_model.length > LEFT_W ? config.sub_model.slice(0, LEFT_W - 1) + "…" : config.sub_model)
+		: null;
+
+	const leftRows: [string, string][] = [
+		["model",     modelShort],
+		...(subModelDisplay ? [["sub-model", subModelDisplay] as [string, string]] : []),
+		["provider",  provider],
+		["directory", cwdShort],
+		["context",   ctxDisplay],
+		["",          ""],
+		["max iters", String(config.max_iterations)],
+		["sub-queries", String(config.max_sub_queries)],
+		["queries run", String(queryCount)],
+	];
+
+	// Right column: slash command reference
+	const rightRows: [string, string][] = [
+		["/file <path>",   "load file / dir / glob"],
+		["/url <url>",     "fetch URL as context"],
+		["/paste",         "multi-line paste"],
+		["@file <query>",  "inline load + query"],
+		["",               ""],
+		["/model",         "list / switch model"],
+		["/provider",      "switch provider"],
+		["/key",           "update API key"],
+		["",               ""],
+		["/trajectories",  "browse saved runs"],
+		["/context",       "show loaded context"],
+		["/clear",         "clear screen"],
+		["/help",          "all commands"],
+		["/quit",          "exit"],
+	];
+
+	const border = "─".repeat(PANEL_W + 2);
+
+	// Version tag centered in top border
+	const vTag    = version ? ` ${version} ` : "";
+	const vTagLen = vTag.length;
+	const lDash   = Math.floor((PANEL_W + 2 - vTagLen) / 2);
+	const rDash   = PANEL_W + 2 - vTagLen - lDash;
+	const topBorder = `${DARK_ASH}${BOLD}┌${"─".repeat(lDash)}${RESET}${DIM}${vTag}${RESET}${DARK_ASH}${BOLD}${"─".repeat(rDash)}┐${RESET}`;
+
+	// Column header
+	const renderHeader = (left: string, right: string): string => {
+		const lPad = Math.max(0, LEFT_W - left.length);
+		const rPad = Math.max(0, RIGHT_W - right.length);
+		return `${DARK_ASH}${BOLD}│${RESET} ${AMBER}${BOLD}${left}${" ".repeat(lPad)}${RESET} ${DARK_ASH}${BOLD}│${RESET} ${AMBER}${BOLD}${right}${" ".repeat(rPad)}${RESET} ${DARK_ASH}${BOLD}│${RESET}`;
+	};
+
+	// Separator row (├──┤)
+	const sepBorder = `${DARK_ASH}${BOLD}├${"─".repeat(LEFT_W + 2)}┼${"─".repeat(RIGHT_W + 2)}┤${RESET}`;
+
+	// Content row
+	const renderRow = (leftLabel: string, leftVal: string, rightCmd: string, rightDesc: string): string => {
+		// Left cell
+		let leftCell: string;
+		if (!leftLabel && !leftVal) {
+			leftCell = " ".repeat(LEFT_W);
+		} else {
+			const lbl = paint(leftLabel.padEnd(11), DIM);
+			const val = paint(leftVal.slice(0, LEFT_W - 12), STONE);
+			const rawLen = leftLabel.padEnd(11).length + leftVal.slice(0, LEFT_W - 12).length;
+			const lPad = " ".repeat(Math.max(0, LEFT_W - rawLen));
+			leftCell = `${lbl} ${val}${lPad}`;
+		}
+
+		// Right cell
+		let rightCell: string;
+		if (!rightCmd && !rightDesc) {
+			rightCell = " ".repeat(RIGHT_W);
+		} else {
+			const cmd  = paint(rightCmd.padEnd(18), SAGE);
+			const desc = paint(rightDesc.slice(0, RIGHT_W - 19), ASH);
+			const rawLen = 18 + rightDesc.slice(0, RIGHT_W - 19).length;
+			const rPad = " ".repeat(Math.max(0, RIGHT_W - rawLen));
+			rightCell = `${cmd} ${desc}${rPad}`;
+		}
+
+		return `${DARK_ASH}${BOLD}│${RESET} ${leftCell} ${DARK_ASH}${BOLD}│${RESET} ${rightCell} ${DARK_ASH}${BOLD}│${RESET}`;
+	};
+
+	const rows = Math.max(leftRows.length, rightRows.length);
+
+	// Print
+	console.log(topBorder);
+	console.log(renderHeader("Session", "Slash Commands"));
+	console.log(sepBorder);
+	for (let i = 0; i < rows; i++) {
+		const [ll, lv] = leftRows[i] ?? ["", ""];
+		const [rc, rd] = rightRows[i] ?? ["", ""];
+		console.log(renderRow(ll, lv, rc, rd));
+	}
+	console.log(`${DARK_ASH}${BOLD}└${"─".repeat(LEFT_W + 2)}┴${"─".repeat(RIGHT_W + 2)}┘${RESET}`);
+}
+
+// ── Status line (compact — used after queries) ───────────────────────────────
 
 function printStatusLine(): void {
-	const provider = currentProviderName || detectProvider();
-	const modelShort = currentModelId.length > 35
-		? currentModelId.slice(0, 32) + "..."
+	const provider    = currentProviderName === "ollama"
+		? "Ollama (local)"
+		: (currentProviderName || detectProvider());
+	const modelShort  = currentModelId.length > 40
+		? currentModelId.slice(0, 37) + "…"
 		: currentModelId;
-	const ctx = contextText
-		? `${c.green}●${c.reset} ${(contextText.length / 1024).toFixed(1)}KB${contextSource ? ` ${c.dim}(${contextSource})${c.reset}` : ""}`
-		: `${c.dim}○${c.reset}`;
+	const ctxInfo = contextText
+		? `${paint("●", SAGE)} ${paint((contextText.length / 1024).toFixed(1) + "KB", STONE)}${contextSource ? paint(` (${contextSource})`, DIM) : ""}`
+		: paint("○ no context", DIM);
 
 	console.log(
-		`  ${c.dim}${modelShort}${c.reset} ${c.dim}(${provider})${c.reset}  ${ctx}  ${c.dim}Q:${queryCount}${c.reset}`
+		`  ${paint(modelShort, AMBER)}  ${paint(provider, DIM)}  ${ctxInfo}  ${paint(`Q:${queryCount}`, DIM)}`
 	);
 }
 
-// ── Directory tree ──────────────────────────────────────────────────────────
+// ── Welcome ──────────────────────────────────────────────────────────────────
+
+function printWelcome(): void {
+	console.clear();
+	printBanner();
+	printWelcomePanel();
+	console.log(paint(`\n  Type your query or /help for commands\n`, DIM));
+}
 
 /** Generate a concise directory tree string (like `tree -L 2`). */
 function generateDirTree(dir: string, prefix = "", depth = 0, maxDepth = 2): string {
@@ -395,58 +583,52 @@ function buildCwdContext(): string {
 	return parts.join("\n");
 }
 
-// ── Welcome ─────────────────────────────────────────────────────────────────
-
-function printWelcome(): void {
-	console.clear();
-	printBanner();
-	const cwdShort = process.cwd().replace(os.homedir(), "~");
-	console.log(`  ${c.dim}${cwdShort}${c.reset}`);
-	printStatusLine();
-	console.log(`  ${c.dim}max ${config.max_iterations} iters · ${config.max_sub_queries} sub-queries · /help${c.reset}\n`);
-}
-
 // ── Help ────────────────────────────────────────────────────────────────────
 
 function printCommandHelp(): void {
+	const cmd = (s: string) => paint(s, AMBER, BOLD);
+	const kw  = (s: string) => paint(s, ICE);
+	const dim = (s: string) => paint(s, DIM);
+	const sec = (s: string) => `\n${paint(`  ◆ ${s}`, ICE, BOLD)}`;
+
 	console.log(`
-${c.bold}Loading Context${c.reset}
-  ${c.cyan}/file${c.reset} <path>              Load a single file
-  ${c.cyan}/file${c.reset} <p1> <p2> ...       Load multiple files
-  ${c.cyan}/file${c.reset} <dir>/              Load all files in a directory (recursive)
-  ${c.cyan}/file${c.reset} src/**/*.ts         Load files matching a glob pattern
-  ${c.cyan}/url${c.reset} <url>                Fetch URL as context
-  ${c.cyan}/paste${c.reset}                    Multi-line paste mode (type EOF to finish)
-  ${c.cyan}/context${c.reset}                  Show loaded context info + file list
-  ${c.cyan}/clear-context${c.reset}            Unload context
+${sec("Loading Context")}
+  ${cmd("/file")} <path>              Load a single file
+  ${cmd("/file")} <p1> <p2> …        Load multiple files
+  ${cmd("/file")} <dir>/             Load all files in a directory (recursive)
+  ${cmd("/file")} src/**/*.ts        Load files matching a glob pattern
+  ${cmd("/url")} <url>               Fetch URL as context
+  ${cmd("/paste")}                   Multi-line paste mode (type ${kw("EOF")} to finish)
+  ${cmd("/context")}                 Show loaded context info + file list
+  ${cmd("/clear-context")}           Unload context
 
-${c.bold}@ Shorthand${c.reset}  ${c.dim}(inline file loading)${c.reset}
-  ${c.cyan}@file.ts${c.reset} <query>           Load file and ask in one shot
-  ${c.cyan}@a.ts @b.ts${c.reset} <query>        Load multiple files + query
-  ${c.cyan}@src/${c.reset} <query>              Load directory + query
-  ${c.cyan}@src/**/*.ts${c.reset} <query>       Load glob + query
+${sec("@ Shorthand")}  ${dim("(inline file loading)")}
+  ${cmd("@file.ts")} <query>          Load file and ask in one shot
+  ${cmd("@a.ts @b.ts")} <query>       Load multiple files + query
+  ${cmd("@src/")} <query>             Load directory + query
+  ${cmd("@src/**/*.ts")} <query>      Load glob + query
 
-${c.bold}Model & Provider${c.reset}
-  ${c.cyan}/model${c.reset}                    List models for current provider
-  ${c.cyan}/model${c.reset} <#|id>              Switch model by number or ID
-  ${c.cyan}/provider${c.reset}                 Switch provider (Anthropic, OpenAI, Google, OpenRouter)
-  ${c.cyan}/key${c.reset}                      Update an API key
+${sec("Model & Provider")}
+  ${cmd("/model")}                   List models for current provider
+  ${cmd("/model")} <#|id>            Switch model by number or ID
+  ${cmd("/provider")}                Switch provider (Anthropic · OpenAI · Google · OpenRouter)
+  ${cmd("/key")}                     Update an API key
 
-${c.bold}Tools${c.reset}
-  ${c.cyan}/trajectories${c.reset}             List saved runs
+${sec("Tools")}
+  ${cmd("/trajectories")}            List saved runs
 
-${c.bold}General${c.reset}
-  ${c.cyan}/clear${c.reset}                    Clear screen
-  ${c.cyan}/help${c.reset}                     Show this help
-  ${c.cyan}/quit${c.reset}                     Exit
+${sec("General")}
+  ${cmd("/clear")}                   Clear screen
+  ${cmd("/help")}                    Show this help
+  ${cmd("/quit")}                    Exit
 
-${c.bold}Tips${c.reset}
-  ${c.dim}•${c.reset} Just type a question — no context needed for general queries
-  ${c.dim}•${c.reset} Paste a URL directly to fetch it as context
-  ${c.dim}•${c.reset} Paste 4+ lines of text to set it as context
-  ${c.dim}•${c.reset} ${c.bold}Ctrl+C${c.reset} stops a running query, ${c.bold}Ctrl+C twice${c.reset} exits
-  ${c.dim}•${c.reset} Directories skip node_modules, .git, dist, binaries, etc.
-  ${c.dim}•${c.reset} Limits: ${MAX_FILES} files max, ${MAX_TOTAL_BYTES / 1024 / 1024}MB total
+${sec("Tips")}
+  ${dim("◇")} Just type a question — no context needed for general queries
+  ${dim("◇")} Paste a URL directly to fetch it as context
+  ${dim("◇")} Paste 4+ lines of text to set it as context
+  ${dim("◇")} ${paint("Ctrl+C", BOLD)} stops a running query  ·  ${paint("Ctrl+C twice", BOLD)} exits
+  ${dim("◇")} Directories skip node_modules, .git, dist, binaries, etc.
+  ${dim("◇")} Limits: ${MAX_FILES} files max, ${MAX_TOTAL_BYTES / 1024 / 1024}MB total
 `);
 }
 
@@ -600,27 +782,38 @@ function handleContext(): void {
 }
 
 function handleTrajectories(): void {
-	if (!fs.existsSync(TRAJ_DIR)) {
-		console.log(`  ${c.dim}No trajectories yet.${c.reset}`);
+	if (!fs.existsSync(SESSIONS_DIR)) {
+		console.log(`  ${c.dim}No sessions yet.${c.reset}`);
 		return;
 	}
-	const files = fs
-		.readdirSync(TRAJ_DIR)
-		.filter((f) => f.endsWith(".json"))
+
+	const sessions = fs
+		.readdirSync(SESSIONS_DIR)
+		.filter((s) => fs.statSync(path.join(SESSIONS_DIR, s)).isDirectory())
 		.sort()
 		.reverse();
-	if (files.length === 0) {
-		console.log(`  ${c.dim}No trajectories yet.${c.reset}`);
+
+	if (sessions.length === 0) {
+		console.log(`  ${c.dim}No sessions yet.${c.reset}`);
 		return;
 	}
-	console.log(`\n  ${c.bold}Saved trajectories:${c.reset}\n`);
-	for (const f of files.slice(0, 15)) {
-		const stat = fs.statSync(path.join(TRAJ_DIR, f));
-		const size = (stat.size / 1024).toFixed(1);
-		console.log(`  ${c.dim}•${c.reset} ${f} ${c.dim}(${size}K)${c.reset}`);
+
+	console.log(`\n  ${c.bold}Saved sessions${c.reset} ${c.dim}(~/.rlm/sessions/)${c.reset}\n`);
+
+	const shown = sessions.slice(0, 10);
+	for (const s of shown) {
+		const dir = path.join(SESSIONS_DIR, s);
+		const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
+		const isCurrent = s === SESSION_ID;
+		const dot = isCurrent ? `${c.green}●${c.reset}` : `${c.dim}·${c.reset}`;
+		const label = isCurrent
+			? `${c.accent}${s}${c.reset} ${c.dim}(current)${c.reset}`
+			: `${c.dim}${s}${c.reset}`;
+		console.log(`  ${dot} ${label} ${c.dim}${files.length} query${files.length !== 1 ? "s" : ""}${c.reset}`);
 	}
-	if (files.length > 15) {
-		console.log(`  ${c.dim}... and ${files.length - 15} more${c.reset}`);
+
+	if (sessions.length > 10) {
+		console.log(`  ${c.dim}... and ${sessions.length - 10} older sessions${c.reset}`);
 	}
 	console.log();
 }
@@ -679,17 +872,17 @@ function displayCode(code: string): void {
 	const lineNumWidth = String(lines.length).length;
 	const codeMaxW = MAX_CONTENT_W - lineNumWidth - 1;
 
-	console.log(boxTop("Code", c.cyan));
+	console.log(boxTop("Code", c.code));
 	for (let i = 0; i < lines.length; i++) {
 		const wrapped = wrapText(lines[i], codeMaxW);
 		for (let j = 0; j < wrapped.length; j++) {
 			const prefix = j === 0
 				? `${c.dim}${String(i + 1).padStart(lineNumWidth)}${c.reset}`
 				: " ".repeat(lineNumWidth);
-			console.log(boxLine(`${prefix} ${c.cyan}${wrapped[j]}${c.reset}`, c.cyan));
+			console.log(`    ${c.code}\u258e${c.reset} ${prefix} ${c.code}${wrapped[j]}${c.reset}`);
 		}
 	}
-	console.log(boxBottom(c.cyan));
+	console.log(boxBottom(c.code));
 }
 
 function displayOutput(output: string): void {
@@ -733,30 +926,17 @@ function formatSize(chars: number): string {
 	return chars >= 1000 ? `${(chars / 1000).toFixed(1)}K` : `${chars}`;
 }
 
-function displaySubQueryStart(info: SubQueryStartInfo): void {
-	console.log(boxTop(`${c.magenta}Sub-query #${info.index}${c.reset}  ${c.dim}${formatSize(info.contextLength)} chars`, c.magenta));
-
-	const instrLines = info.instruction.split("\n").filter(l => l.trim());
-	for (const line of instrLines) {
-		for (const chunk of wrapText(line, MAX_CONTENT_W)) {
-			console.log(boxLine(`${c.dim}${chunk}${c.reset}`, c.magenta));
-		}
-	}
+function displaySubQueryStart(_info: SubQueryStartInfo): void {
+	// Nothing printed here — we wait for the result and show a single compact line
 }
 
 function displaySubQueryResult(info: SubQueryInfo): void {
 	const elapsed = (info.elapsedMs / 1000).toFixed(1);
-	const resultLines = info.resultPreview.split("\n");
-
-	console.log(boxLine("", c.magenta));
-	console.log(boxLine(`${c.green}Response:${c.reset}`, c.magenta));
-	for (const line of resultLines) {
-		for (const chunk of wrapText(line, MAX_CONTENT_W)) {
-			console.log(boxLine(`${c.green}${chunk}${c.reset}`, c.magenta));
-		}
-	}
-	console.log(boxBottom(c.magenta));
-	console.log(`    ${c.dim}${elapsed}s · ${formatSize(info.resultLength)} received${c.reset}`);
+	const instrPreview = truncateStr(info.instruction.replace(/\n/g, " "), 55);
+	const resultPreview = truncateStr(info.resultPreview.replace(/\n/g, " "), 45);
+	console.log(
+		`    ${c.subquery}↳${c.reset} ${c.dim}#${info.index}${c.reset}  ${instrPreview}  ${c.dim}→${c.reset}  ${c.result}${resultPreview}${c.reset}  ${c.dim}${elapsed}s${c.reset}`
+	);
 }
 
 // ── Available models list ────────────────────────────────────────────────────
@@ -1088,6 +1268,7 @@ async function runQuery(query: string): Promise<void> {
 			context: effectiveContext,
 			query,
 			model: currentModel,
+			subModel: config.sub_model ? resolveModel(config.sub_model) : undefined,
 			repl,
 			signal: ac.signal,
 			onProgress: (info: RlmProgress) => {
@@ -1107,9 +1288,9 @@ async function runQuery(query: string): Promise<void> {
 					};
 
 					const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-					console.log(`\n  ${c.bold}Step ${info.iteration}${c.reset}${c.dim}/${info.maxIterations}  ${elapsed}s elapsed${c.reset}`);
+					console.log(`\n  ${paint(`◆ Iteration ${info.iteration}`, AMBER, BOLD)}  ${paint(`${elapsed}s elapsed`, DIM)}`);
 					stepRule();
-					spinner.start("Generating code");
+					spinner.start("reasoning\u2026");
 				}
 
 				if (info.phase === "executing" && info.code) {
@@ -1121,7 +1302,7 @@ async function runQuery(query: string): Promise<void> {
 					}
 
 					displayCode(info.code);
-					spinner.start("Executing");
+					spinner.start("executing\u2026");
 				}
 
 				if (info.phase === "checking_final") {
@@ -1143,14 +1324,14 @@ async function runQuery(query: string): Promise<void> {
 					}
 
 					const iterElapsed = ((Date.now() - iterStart) / 1000).toFixed(1);
-					const sqLabel = info.subQueries > 0 ? ` · ${info.subQueries} sub-queries` : "";
-					console.log(`\n    ${c.dim}${iterElapsed}s${sqLabel}${c.reset}`);
+					const sqLabel = info.subQueries > 0 ? `  ·  ${info.subQueries} sub-quer${info.subQueries !== 1 ? "ies" : "y"}` : "";
+					console.log(`\n    ${paint(`✓ ${iterElapsed}s${sqLabel}`, DIM)}`);
 				}
 			},
 			onSubQueryStart: (info: SubQueryStartInfo) => {
 				spinner.stop();
 				displaySubQueryStart(info);
-				spinner.start("");
+				spinner.start("querying\u2026");
 			},
 			onSubQuery: (info: SubQueryInfo) => {
 				subQueryCount++;
@@ -1160,7 +1341,7 @@ async function runQuery(query: string): Promise<void> {
 
 				spinner.stop();
 				displaySubQueryResult(info);
-				spinner.start("Executing");
+				spinner.start("executing\u2026");
 			},
 		});
 
@@ -1173,11 +1354,11 @@ async function runQuery(query: string): Promise<void> {
 
 		// Final answer
 		const totalSec = ((Date.now() - startTime) / 1000).toFixed(1);
-		const stats = `${result.iterations} step${result.iterations !== 1 ? "s" : ""} · ${result.totalSubQueries} sub-quer${result.totalSubQueries !== 1 ? "ies" : "y"} · ${totalSec}s`;
+		const stats = `${result.iterations} step${result.iterations !== 1 ? "s" : ""}  ·  ${result.totalSubQueries} sub-quer${result.totalSubQueries !== 1 ? "ies" : "y"}  ·  ${totalSec}s`;
 
 		const answerLines = result.answer.split("\n");
 		console.log();
-		console.log(boxTop(`${c.green}✔ Result${c.reset}  ${c.dim}${stats}`, c.green));
+		console.log(boxTop(`${paint("✓ Result", SAGE, BOLD)}  ${paint(stats, DIM)}`, c.green));
 		for (const line of answerLines) {
 			for (const chunk of wrapText(line, MAX_CONTENT_W)) {
 				console.log(boxLine(chunk, c.green));
@@ -1186,15 +1367,13 @@ async function runQuery(query: string): Promise<void> {
 		console.log(boxBottom(c.green));
 		console.log();
 
-		// Save trajectory
+		// Save trajectory silently to session directory
 		try {
-			if (!fs.existsSync(TRAJ_DIR)) fs.mkdirSync(TRAJ_DIR, { recursive: true });
-			const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-			const trajFile = `trajectory-${ts}.json`;
-			fs.writeFileSync(path.join(TRAJ_DIR, trajFile), JSON.stringify(trajectory, null, 2), "utf-8");
-			console.log(`  ${c.dim}Saved: ~/.rlm/trajectories/${trajFile}${c.reset}\n`);
+			if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
+			const trajFile = `query-${String(queryCount).padStart(3, "0")}.json`;
+			fs.writeFileSync(path.join(SESSION_DIR, trajFile), JSON.stringify(trajectory, null, 2), "utf-8");
 		} catch {
-			console.log(`  ${c.yellow}Could not save trajectory.${c.reset}\n`);
+			// Silently swallow trajectory save errors — never surface to user
 		}
 	} catch (err: any) {
 		spinner.stop();
@@ -1295,6 +1474,9 @@ async function detectAndLoadUrl(input: string): Promise<boolean> {
 // ── Main interactive loop ───────────────────────────────────────────────────
 
 async function interactive(): Promise<void> {
+	// Load Ollama models in the background — non-blocking
+	loadOllamaModels().catch(() => {});
+
 	// Validate env
 	if (!hasAnyApiKey()) {
 		printBanner();
@@ -1355,11 +1537,12 @@ async function interactive(): Promise<void> {
 	}
 
 	// Resolve model — ensure the resolved provider actually has an API key
+	// (Ollama models don't need a key — always accept them)
 	const initialResolved = resolveModelWithProvider(currentModelId);
 	if (initialResolved) {
+		const isOllamaProvider = initialResolved.provider === "ollama";
 		const resolvedKey = providerEnvKey(initialResolved.provider);
-		if (process.env[resolvedKey]) {
-			// Provider has a key — use it
+		if (isOllamaProvider || process.env[resolvedKey]) {
 			currentModel = initialResolved.model;
 			currentProviderName = initialResolved.provider;
 		}
@@ -1398,7 +1581,7 @@ async function interactive(): Promise<void> {
 	const rl = readline.createInterface({
 		input: stdin,
 		output: stdout,
-		prompt: `${c.cyan}>${c.reset} `,
+		prompt: `${c.cyan}❯${c.reset} `,
 		terminal: true,
 	});
 
@@ -1540,9 +1723,11 @@ async function interactive(): Promise<void> {
 					} else {
 						// List models for current provider
 						const models = getModelsForProvider(curProvider);
-						const provLabel = findSetupProvider(curProvider)?.name || curProvider;
+						const provLabel = curProvider === "ollama"
+							? "Ollama (local)"
+							: (findSetupProvider(curProvider)?.name || curProvider);
 						console.log(`\n  ${c.bold}Current model:${c.reset} ${c.cyan}${currentModelId}${c.reset} ${c.dim}(${provLabel})${c.reset}\n`);
-						const pad = String(models.length).length;
+						const pad = String(Math.max(models.length, 1)).length;
 						for (let i = 0; i < models.length; i++) {
 							const m = models[i];
 							const num = String(i + 1).padStart(pad);
@@ -1552,7 +1737,28 @@ async function interactive(): Promise<void> {
 								: `${c.dim}${m.id}${c.reset}`;
 							console.log(`  ${c.dim}${num}${c.reset} ${dot} ${label}`);
 						}
-						console.log(`\n  ${c.dim}${models.length} models · scroll up to see full list.${c.reset}`);
+
+						// Show Ollama models as a separate section
+						if (ollamaModelMap.size > 0) {
+							const ollamaNames: string[] = [];
+							for (const key of ollamaModelMap.keys()) {
+								if (!key.startsWith("ollama:")) continue;
+								ollamaNames.push(key.slice("ollama:".length));
+							}
+							if (ollamaNames.length > 0) {
+								console.log(`\n  ${c.dim}── Ollama (local) ──${c.reset}`);
+								for (const name of ollamaNames) {
+									const isActive = currentModelId === name || currentModelId === `ollama:${name}`;
+									const dot = isActive ? `${c.green}●${c.reset}` : ` `;
+									const sizeBytes = ollamaSizes.get(name) ?? 0;
+									const sizeStr = sizeBytes > 0 ? ` ${c.dim}${formatOllamaSize(sizeBytes)}${c.reset}` : "";
+									const lbl = isActive ? `${c.cyan}${name}${c.reset}` : `${c.dim}${name}${c.reset}`;
+									console.log(`     ${dot} ${lbl}${sizeStr}`);
+								}
+							}
+						}
+
+						if (models.length > 0) console.log(`\n  ${c.dim}${models.length} models · scroll up to see full list.${c.reset}`);
 						console.log(`  ${c.dim}Type${c.reset} ${c.cyan}/model <number>${c.reset} ${c.dim}or${c.reset} ${c.cyan}/model <id>${c.reset} ${c.dim}to switch.${c.reset}`);
 						console.log(`  ${c.dim}Type${c.reset} ${c.cyan}/provider${c.reset} ${c.dim}to switch provider.${c.reset}`);
 					}
@@ -1561,7 +1767,7 @@ async function interactive(): Promise<void> {
 				case "provider":
 				case "prov": {
 					const curProvider = currentProviderName || detectProvider();
-					const curLabel = findSetupProvider(curProvider)?.name || curProvider;
+					const curLabel = curProvider === "ollama" ? "Ollama (local)" : (findSetupProvider(curProvider)?.name || curProvider);
 					console.log(`\n  ${c.bold}Current provider:${c.reset} ${c.cyan}${curLabel}${c.reset}\n`);
 
 					for (let i = 0; i < SETUP_PROVIDERS.length; i++) {
@@ -1573,13 +1779,41 @@ async function interactive(): Promise<void> {
 							: `${p.name} ${c.dim}(${p.label})${c.reset}`;
 						console.log(`  ${c.dim}${i + 1}${c.reset} ${dot} ${label}`);
 					}
+
+					// Ollama — no key needed, always available if daemon is running
+					if (ollamaModelMap.size > 0) {
+						const isOllama = curProvider === "ollama";
+						const dot = isOllama ? `${c.green}●${c.reset}` : ` `;
+						const label = isOllama
+							? `${c.cyan}Ollama${c.reset} ${c.dim}(local · ${ollamaModelMap.size / 2} model${ollamaModelMap.size / 2 !== 1 ? "s" : ""})${c.reset}`
+							: `Ollama ${c.dim}(local · ${ollamaModelMap.size / 2} model${ollamaModelMap.size / 2 !== 1 ? "s" : ""})${c.reset}`;
+						console.log(`  ${c.dim}${SETUP_PROVIDERS.length + 1}${c.reset} ${dot} ${label}`);
+					}
 					console.log();
 
-					const provChoice = await questionWithEsc(rl, `  ${c.cyan}Provider [1-${SETUP_PROVIDERS.length}]:${c.reset} ${c.dim}(ESC to cancel)${c.reset} `);
+					const maxChoice = SETUP_PROVIDERS.length + (ollamaModelMap.size > 0 ? 1 : 0);
+					const provChoice = await questionWithEsc(rl, `  ${c.cyan}Provider [1-${maxChoice}]:${c.reset} ${c.dim}(ESC to cancel)${c.reset} `);
 					if (provChoice === null) break; // ESC
 					const idx = parseInt(provChoice, 10) - 1;
-					if (isNaN(idx) || idx < 0 || idx >= SETUP_PROVIDERS.length) {
+					if (isNaN(idx) || idx < 0 || idx >= maxChoice) {
 						console.log(`  ${c.dim}Cancelled.${c.reset}`);
+						break;
+					}
+
+					// Ollama choice
+					if (idx === SETUP_PROVIDERS.length) {
+						// Pick first Ollama model as default
+						const firstName = [...ollamaModelMap.keys()].find((k) => k.startsWith("ollama:"))?.slice("ollama:".length);
+						if (firstName) {
+							currentModelId = firstName;
+							const r = resolveModelWithProvider(firstName);
+							currentModel = r?.model;
+							currentProviderName = "ollama";
+							saveModelPreference(currentModelId);
+							console.log(`  ${c.green}✓${c.reset} Ollama · ${c.bold}${currentModelId}${c.reset}`);
+							console.log(`  ${c.dim}Type ${c.reset}${c.cyan}/model${c.reset}${c.dim} to switch between Ollama models.${c.reset}`);
+							printStatusLine();
+						}
 						break;
 					}
 

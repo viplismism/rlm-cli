@@ -14,14 +14,16 @@ export interface RlmConfig {
 	max_sub_queries: number;
 	truncate_len: number;
 	metadata_preview_lines: number;
+	sub_model: string;  // model ID for sub-queries (empty = same as root)
 }
 
 const DEFAULTS: RlmConfig = {
 	max_iterations: 20,
-	max_depth: 3,
+	max_depth: 1,  // paper uses depth=1: sub-calls are flat LLMs, not nested RLMs
 	max_sub_queries: 50,
 	truncate_len: 5000,
 	metadata_preview_lines: 20,
+	sub_model: "",  // empty = same model as root
 };
 
 function parseYaml(text: string): Record<string, unknown> {
@@ -72,6 +74,7 @@ export function loadConfig(): RlmConfig {
 					max_sub_queries: clamp(parsed.max_sub_queries, 1, 500, DEFAULTS.max_sub_queries),
 					truncate_len: clamp(parsed.truncate_len, 500, 50000, DEFAULTS.truncate_len),
 					metadata_preview_lines: clamp(parsed.metadata_preview_lines, 5, 100, DEFAULTS.metadata_preview_lines),
+					sub_model: typeof parsed.sub_model === "string" ? parsed.sub_model.trim() : (process.env.RLM_SUB_MODEL ?? ""),
 				};
 			} catch {
 				// Fall through to defaults
@@ -79,5 +82,5 @@ export function loadConfig(): RlmConfig {
 		}
 	}
 
-	return { ...DEFAULTS };
+	return { ...DEFAULTS, sub_model: process.env.RLM_SUB_MODEL ?? "" };
 }
