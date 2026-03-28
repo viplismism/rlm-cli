@@ -16,6 +16,9 @@ import * as readline from "node:readline";
 import { stdin, stdout } from "node:process";
 import { fileURLToPath } from "node:url";
 import {
+	fetchOllamaModels, createOllamaModel, formatOllamaSize, OLLAMA_DEFAULT_BASE_URL,
+} from "./ollama.js";
+import {
 	RESET, BOLD, DIM,
 	AMBER, AMBER_DIM, SAGE, ICE, LAVENDER, STONE, ASH, DARK_ASH, ROSE,
 	paint, printPanel,
@@ -112,7 +115,12 @@ class Spinner {
 
 const DEFAULT_MODEL = process.env.RLM_MODEL || "claude-sonnet-4-6";
 const RLM_HOME = path.join(os.homedir(), ".rlm");
-const TRAJ_DIR = path.join(RLM_HOME, "trajectories");
+const SESSIONS_DIR = path.join(RLM_HOME, "sessions");
+
+// Per-session folder — all trajectories for this run go here
+const SESSION_ID = `session-${new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19)}`;
+const SESSION_DIR = path.join(SESSIONS_DIR, SESSION_ID);
+
 let W = Math.min(process.stdout.columns || 80, 100);
 
 // ── Session state ───────────────────────────────────────────────────────────
@@ -129,6 +137,25 @@ let isRunning = false;
 let activeAc: AbortController | null = null;
 let activeRepl: InstanceType<typeof PythonRepl> | null = null;
 let activeSpinner: Spinner | null = null;
+
+// ── Ollama local model registry ──────────────────────────────────────────────
+
+// Maps "ollama:<name>" (and bare name) → Model for Ollama-hosted models
+const ollamaModelMap = new Map<string, Model<"openai-completions">>();
+const ollamaBaseUrl = process.env.OLLAMA_BASE_URL || OLLAMA_DEFAULT_BASE_URL;
+let ollamaSizes: Map<string, number> = new Map(); // name → bytes
+
+async function loadOllamaModels(): Promise<void> {
+	const models = await fetchOllamaModels(ollamaBaseUrl);
+	ollamaModelMap.clear();
+	ollamaSizes.clear();
+	for (const m of models) {
+		const mdl = createOllamaModel(m.name, ollamaBaseUrl);
+		ollamaModelMap.set(`ollama:${m.name}`, mdl);
+		ollamaModelMap.set(m.name, mdl); // bare name also works (colons are unique to Ollama)
+		ollamaSizes.set(m.name, m.size);
+	}
+}
 
 // ── Resolve model ───────────────────────────────────────────────────────────
 
@@ -165,12 +192,19 @@ function detectProvider(): string {
 }
 
 function hasAnyApiKey(): boolean {
-	return detectProvider() !== "unknown";
+	return detectProvider() !== "unknown" || ollamaModelMap.size > 0;
 }
 
 /** Returns the pi-ai provider name + model for a given model ID, searching all providers.
- *  Prioritises SETUP_PROVIDERS (with API key) so e.g. "gpt-4o" resolves to "openai" not "azure-openai-responses". */
+ *  Prioritises SETUP_PROVIDERS (with API key) so e.g. "gpt-4o" resolves to "openai" not "azure-openai-responses".
+ *  Checks local Ollama models first for `ollama:` prefix or bare Ollama model names. */
 function resolveModelWithProvider(modelId: string): { model: Model<Api>; provider: string } | undefined {
+	// Ollama: explicit prefix "ollama:<name>" or bare Ollama model name (e.g. "llama3.1:8b")
+	const ollamaKey = modelId.startsWith("ollama:") ? modelId : (ollamaModelMap.has(modelId) ? modelId : null);
+	if (ollamaKey) {
+		const m = ollamaModelMap.get(ollamaKey);
+		if (m) return { model: m as unknown as Model<Api>, provider: "ollama" };
+	}
 	const knownNames = new Set(SETUP_PROVIDERS.map((p) => p.piProvider));
 	let firstMatch: { model: Model<Api>; provider: string } | undefined;
 
@@ -363,7 +397,9 @@ function printWelcomePanel(): void {
 	const LEFT_W  = 36;                        // left column content width
 	const RIGHT_W = PANEL_W - LEFT_W - 3;     // right column (│ sep + padding)
 
-	const provider    = currentProviderName || detectProvider();
+	const provider    = currentProviderName === "ollama"
+		? "Ollama (local)"
+		: (currentProviderName || detectProvider());
 	const modelShort  = currentModelId.length > LEFT_W
 		? currentModelId.slice(0, LEFT_W - 1) + "…"
 		: currentModelId;
@@ -473,7 +509,9 @@ function printWelcomePanel(): void {
 // ── Status line (compact — used after queries) ───────────────────────────────
 
 function printStatusLine(): void {
-	const provider    = currentProviderName || detectProvider();
+	const provider    = currentProviderName === "ollama"
+		? "Ollama (local)"
+		: (currentProviderName || detectProvider());
 	const modelShort  = currentModelId.length > 40
 		? currentModelId.slice(0, 37) + "…"
 		: currentModelId;
@@ -744,27 +782,38 @@ function handleContext(): void {
 }
 
 function handleTrajectories(): void {
-	if (!fs.existsSync(TRAJ_DIR)) {
-		console.log(`  ${c.dim}No trajectories yet.${c.reset}`);
+	if (!fs.existsSync(SESSIONS_DIR)) {
+		console.log(`  ${c.dim}No sessions yet.${c.reset}`);
 		return;
 	}
-	const files = fs
-		.readdirSync(TRAJ_DIR)
-		.filter((f) => f.endsWith(".json"))
+
+	const sessions = fs
+		.readdirSync(SESSIONS_DIR)
+		.filter((s) => fs.statSync(path.join(SESSIONS_DIR, s)).isDirectory())
 		.sort()
 		.reverse();
-	if (files.length === 0) {
-		console.log(`  ${c.dim}No trajectories yet.${c.reset}`);
+
+	if (sessions.length === 0) {
+		console.log(`  ${c.dim}No sessions yet.${c.reset}`);
 		return;
 	}
-	console.log(`\n  ${c.bold}Saved trajectories:${c.reset}\n`);
-	for (const f of files.slice(0, 15)) {
-		const stat = fs.statSync(path.join(TRAJ_DIR, f));
-		const size = (stat.size / 1024).toFixed(1);
-		console.log(`  ${c.dim}•${c.reset} ${f} ${c.dim}(${size}K)${c.reset}`);
+
+	console.log(`\n  ${c.bold}Saved sessions${c.reset} ${c.dim}(~/.rlm/sessions/)${c.reset}\n`);
+
+	const shown = sessions.slice(0, 10);
+	for (const s of shown) {
+		const dir = path.join(SESSIONS_DIR, s);
+		const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
+		const isCurrent = s === SESSION_ID;
+		const dot = isCurrent ? `${c.green}●${c.reset}` : `${c.dim}·${c.reset}`;
+		const label = isCurrent
+			? `${c.accent}${s}${c.reset} ${c.dim}(current)${c.reset}`
+			: `${c.dim}${s}${c.reset}`;
+		console.log(`  ${dot} ${label} ${c.dim}${files.length} query${files.length !== 1 ? "s" : ""}${c.reset}`);
 	}
-	if (files.length > 15) {
-		console.log(`  ${c.dim}... and ${files.length - 15} more${c.reset}`);
+
+	if (sessions.length > 10) {
+		console.log(`  ${c.dim}... and ${sessions.length - 10} older sessions${c.reset}`);
 	}
 	console.log();
 }
@@ -1318,15 +1367,13 @@ async function runQuery(query: string): Promise<void> {
 		console.log(boxBottom(c.green));
 		console.log();
 
-		// Save trajectory
+		// Save trajectory silently to session directory
 		try {
-			if (!fs.existsSync(TRAJ_DIR)) fs.mkdirSync(TRAJ_DIR, { recursive: true });
-			const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-			const trajFile = `trajectory-${ts}.json`;
-			fs.writeFileSync(path.join(TRAJ_DIR, trajFile), JSON.stringify(trajectory, null, 2), "utf-8");
-			console.log(`  ${c.dim}Saved: ~/.rlm/trajectories/${trajFile}${c.reset}\n`);
+			if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
+			const trajFile = `query-${String(queryCount).padStart(3, "0")}.json`;
+			fs.writeFileSync(path.join(SESSION_DIR, trajFile), JSON.stringify(trajectory, null, 2), "utf-8");
 		} catch {
-			console.log(`  ${c.yellow}Could not save trajectory.${c.reset}\n`);
+			// Silently swallow trajectory save errors — never surface to user
 		}
 	} catch (err: any) {
 		spinner.stop();
@@ -1427,6 +1474,9 @@ async function detectAndLoadUrl(input: string): Promise<boolean> {
 // ── Main interactive loop ───────────────────────────────────────────────────
 
 async function interactive(): Promise<void> {
+	// Load Ollama models in the background — non-blocking
+	loadOllamaModels().catch(() => {});
+
 	// Validate env
 	if (!hasAnyApiKey()) {
 		printBanner();
@@ -1487,11 +1537,12 @@ async function interactive(): Promise<void> {
 	}
 
 	// Resolve model — ensure the resolved provider actually has an API key
+	// (Ollama models don't need a key — always accept them)
 	const initialResolved = resolveModelWithProvider(currentModelId);
 	if (initialResolved) {
+		const isOllamaProvider = initialResolved.provider === "ollama";
 		const resolvedKey = providerEnvKey(initialResolved.provider);
-		if (process.env[resolvedKey]) {
-			// Provider has a key — use it
+		if (isOllamaProvider || process.env[resolvedKey]) {
 			currentModel = initialResolved.model;
 			currentProviderName = initialResolved.provider;
 		}
@@ -1672,9 +1723,11 @@ async function interactive(): Promise<void> {
 					} else {
 						// List models for current provider
 						const models = getModelsForProvider(curProvider);
-						const provLabel = findSetupProvider(curProvider)?.name || curProvider;
+						const provLabel = curProvider === "ollama"
+							? "Ollama (local)"
+							: (findSetupProvider(curProvider)?.name || curProvider);
 						console.log(`\n  ${c.bold}Current model:${c.reset} ${c.cyan}${currentModelId}${c.reset} ${c.dim}(${provLabel})${c.reset}\n`);
-						const pad = String(models.length).length;
+						const pad = String(Math.max(models.length, 1)).length;
 						for (let i = 0; i < models.length; i++) {
 							const m = models[i];
 							const num = String(i + 1).padStart(pad);
@@ -1684,7 +1737,28 @@ async function interactive(): Promise<void> {
 								: `${c.dim}${m.id}${c.reset}`;
 							console.log(`  ${c.dim}${num}${c.reset} ${dot} ${label}`);
 						}
-						console.log(`\n  ${c.dim}${models.length} models · scroll up to see full list.${c.reset}`);
+
+						// Show Ollama models as a separate section
+						if (ollamaModelMap.size > 0) {
+							const ollamaNames: string[] = [];
+							for (const key of ollamaModelMap.keys()) {
+								if (!key.startsWith("ollama:")) continue;
+								ollamaNames.push(key.slice("ollama:".length));
+							}
+							if (ollamaNames.length > 0) {
+								console.log(`\n  ${c.dim}── Ollama (local) ──${c.reset}`);
+								for (const name of ollamaNames) {
+									const isActive = currentModelId === name || currentModelId === `ollama:${name}`;
+									const dot = isActive ? `${c.green}●${c.reset}` : ` `;
+									const sizeBytes = ollamaSizes.get(name) ?? 0;
+									const sizeStr = sizeBytes > 0 ? ` ${c.dim}${formatOllamaSize(sizeBytes)}${c.reset}` : "";
+									const lbl = isActive ? `${c.cyan}${name}${c.reset}` : `${c.dim}${name}${c.reset}`;
+									console.log(`     ${dot} ${lbl}${sizeStr}`);
+								}
+							}
+						}
+
+						if (models.length > 0) console.log(`\n  ${c.dim}${models.length} models · scroll up to see full list.${c.reset}`);
 						console.log(`  ${c.dim}Type${c.reset} ${c.cyan}/model <number>${c.reset} ${c.dim}or${c.reset} ${c.cyan}/model <id>${c.reset} ${c.dim}to switch.${c.reset}`);
 						console.log(`  ${c.dim}Type${c.reset} ${c.cyan}/provider${c.reset} ${c.dim}to switch provider.${c.reset}`);
 					}
@@ -1693,7 +1767,7 @@ async function interactive(): Promise<void> {
 				case "provider":
 				case "prov": {
 					const curProvider = currentProviderName || detectProvider();
-					const curLabel = findSetupProvider(curProvider)?.name || curProvider;
+					const curLabel = curProvider === "ollama" ? "Ollama (local)" : (findSetupProvider(curProvider)?.name || curProvider);
 					console.log(`\n  ${c.bold}Current provider:${c.reset} ${c.cyan}${curLabel}${c.reset}\n`);
 
 					for (let i = 0; i < SETUP_PROVIDERS.length; i++) {
@@ -1705,13 +1779,41 @@ async function interactive(): Promise<void> {
 							: `${p.name} ${c.dim}(${p.label})${c.reset}`;
 						console.log(`  ${c.dim}${i + 1}${c.reset} ${dot} ${label}`);
 					}
+
+					// Ollama — no key needed, always available if daemon is running
+					if (ollamaModelMap.size > 0) {
+						const isOllama = curProvider === "ollama";
+						const dot = isOllama ? `${c.green}●${c.reset}` : ` `;
+						const label = isOllama
+							? `${c.cyan}Ollama${c.reset} ${c.dim}(local · ${ollamaModelMap.size / 2} model${ollamaModelMap.size / 2 !== 1 ? "s" : ""})${c.reset}`
+							: `Ollama ${c.dim}(local · ${ollamaModelMap.size / 2} model${ollamaModelMap.size / 2 !== 1 ? "s" : ""})${c.reset}`;
+						console.log(`  ${c.dim}${SETUP_PROVIDERS.length + 1}${c.reset} ${dot} ${label}`);
+					}
 					console.log();
 
-					const provChoice = await questionWithEsc(rl, `  ${c.cyan}Provider [1-${SETUP_PROVIDERS.length}]:${c.reset} ${c.dim}(ESC to cancel)${c.reset} `);
+					const maxChoice = SETUP_PROVIDERS.length + (ollamaModelMap.size > 0 ? 1 : 0);
+					const provChoice = await questionWithEsc(rl, `  ${c.cyan}Provider [1-${maxChoice}]:${c.reset} ${c.dim}(ESC to cancel)${c.reset} `);
 					if (provChoice === null) break; // ESC
 					const idx = parseInt(provChoice, 10) - 1;
-					if (isNaN(idx) || idx < 0 || idx >= SETUP_PROVIDERS.length) {
+					if (isNaN(idx) || idx < 0 || idx >= maxChoice) {
 						console.log(`  ${c.dim}Cancelled.${c.reset}`);
+						break;
+					}
+
+					// Ollama choice
+					if (idx === SETUP_PROVIDERS.length) {
+						// Pick first Ollama model as default
+						const firstName = [...ollamaModelMap.keys()].find((k) => k.startsWith("ollama:"))?.slice("ollama:".length);
+						if (firstName) {
+							currentModelId = firstName;
+							const r = resolveModelWithProvider(firstName);
+							currentModel = r?.model;
+							currentProviderName = "ollama";
+							saveModelPreference(currentModelId);
+							console.log(`  ${c.green}✓${c.reset} Ollama · ${c.bold}${currentModelId}${c.reset}`);
+							console.log(`  ${c.dim}Type ${c.reset}${c.cyan}/model${c.reset}${c.dim} to switch between Ollama models.${c.reset}`);
+							printStatusLine();
+						}
 						break;
 					}
 
