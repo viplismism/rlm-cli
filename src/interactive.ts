@@ -374,8 +374,13 @@ function printWelcomePanel(): void {
 	const ctxDisplay  = ctxInfo.length > LEFT_W ? ctxInfo.slice(0, LEFT_W - 1) + "…" : ctxInfo;
 
 	// Left column rows  [label, value]
+	const subModelDisplay = config.sub_model
+		? (config.sub_model.length > LEFT_W ? config.sub_model.slice(0, LEFT_W - 1) + "…" : config.sub_model)
+		: null;
+
 	const leftRows: [string, string][] = [
 		["model",     modelShort],
+		...(subModelDisplay ? [["sub-model", subModelDisplay] as [string, string]] : []),
 		["provider",  provider],
 		["directory", cwdShort],
 		["context",   ctxDisplay],
@@ -1214,6 +1219,7 @@ async function runQuery(query: string): Promise<void> {
 			context: effectiveContext,
 			query,
 			model: currentModel,
+			subModel: config.sub_model ? resolveModel(config.sub_model) : undefined,
 			repl,
 			signal: ac.signal,
 			onProgress: (info: RlmProgress) => {
