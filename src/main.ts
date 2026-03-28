@@ -9,39 +9,56 @@
  *   rlm help         → show help
  */
 
-const HELP = `
-\x1b[36m╔══════════════════════════════════════════════════════════════╗
-║               rlm — Recursive Language Models                ║
-║          CLI for large-context LLM processing                ║
-║              arXiv:2512.24601                                ║
-╚══════════════════════════════════════════════════════════════╝\x1b[0m
+import {
+	RESET, BOLD, DIM,
+	AMBER, ICE, STONE, DARK_ASH,
+	paint,
+} from "./colors.js";
 
-\x1b[1mUSAGE\x1b[0m
-  \x1b[33mrlm\x1b[0m                          Interactive terminal (default)
-  \x1b[33mrlm run\x1b[0m [options] "<query>"  Run a single query
-  \x1b[33mrlm viewer\x1b[0m                    Browse saved trajectory files
-  \x1b[33mrlm benchmark\x1b[0m <name> [--idx]  Run benchmark (direct LLM vs RLM)
+function buildHelp(): string {
+	const cmd = (s: string) => paint(s, AMBER, BOLD);
+	const sec = (s: string) => `\n${paint(`  ◆ ${s}`, ICE, BOLD)}`;
+	const dim = (s: string) => paint(s, DIM);
+	const border = "─".repeat(55);
+	const header = [
+		`${DARK_ASH}${BOLD}┌${border}┐${RESET}`,
+		`${DARK_ASH}${BOLD}│${RESET} ${AMBER}${BOLD}  rlm — Recursive Language Models                      ${RESET} ${DARK_ASH}${BOLD}│${RESET}`,
+		`${DARK_ASH}${BOLD}│${RESET} ${STONE}  CLI for large-context LLM processing                 ${RESET} ${DARK_ASH}${BOLD}│${RESET}`,
+		`${DARK_ASH}${BOLD}│${RESET} ${DIM}  arXiv:2512.24601                                      ${RESET} ${DARK_ASH}${BOLD}│${RESET}`,
+		`${DARK_ASH}${BOLD}└${border}┘${RESET}`,
+	].join("\n");
 
-\x1b[1mRUN OPTIONS\x1b[0m
-  --model <id>     Override model (default: RLM_MODEL from .env)
-  --file <path>    Read context from a file
-  --url <url>      Fetch context from a URL
-  --stdin          Read context from stdin
-  --verbose        Show iteration progress
+	return `
+${header}
+${sec("Usage")}
+  ${cmd("rlm")}                           Interactive terminal ${dim("(default)")}
+  ${cmd("rlm run")} [options] "<query>"   Run a single query
+  ${cmd("rlm viewer")}                    Browse saved trajectory files
+  ${cmd("rlm benchmark")} <name> [--idx] Run benchmark ${dim("(direct LLM vs RLM)")}
 
-\x1b[1mCONFIGURATION\x1b[0m
-  .env file (pick one provider):
-    ANTHROPIC_API_KEY=sk-ant-...
-    OPENAI_API_KEY=sk-...
-    GEMINI_API_KEY=AIza...
-    OPENROUTER_API_KEY=sk-or-...
+${sec("Run options")}
+  ${cmd("--model")} <id>   Override model ${dim("(default: RLM_MODEL from .env)")}
+  ${cmd("--file")} <path>  Read context from a file
+  ${cmd("--url")} <url>    Fetch context from a URL
+  ${cmd("--stdin")}        Read context from stdin
+  ${cmd("--verbose")}      Show iteration progress
 
-  rlm_config.yaml:
+${sec("Configuration")}
+  ${dim(".env file")} — pick one provider:
+    ANTHROPIC_API_KEY=sk-ant-…
+    OPENAI_API_KEY=sk-…
+    GEMINI_API_KEY=AIza…
+    OPENROUTER_API_KEY=sk-or-…
+
+  ${dim("rlm_config.yaml:")}
     max_iterations: 20
     max_depth: 3
     max_sub_queries: 50
     truncate_len: 5000
 `.trim();
+}
+
+const HELP = buildHelp();
 
 async function main() {
 	const args = process.argv.slice(2);
