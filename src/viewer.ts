@@ -14,6 +14,10 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import * as readline from "node:readline";
+import {
+	RESET, BOLD, DIM, ITALIC, UNDERLINE,
+	AMBER, SAGE, ICE, LAVENDER, STONE, ASH, DARK_ASH, ROSE,
+} from "./colors.js";
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -53,28 +57,30 @@ interface TrajectoryData {
 // ── ANSI helpers ────────────────────────────────────────────────────────────
 
 const c = {
-	reset: "\x1b[0m",
-	bold: "\x1b[1m",
-	dim: "\x1b[2m",
-	italic: "\x1b[3m",
-	underline: "\x1b[4m",
-	inverse: "\x1b[7m",
-	red: "\x1b[31m",
-	green: "\x1b[32m",
-	yellow: "\x1b[33m",
-	blue: "\x1b[34m",
-	magenta: "\x1b[35m",
-	cyan: "\x1b[36m",
-	white: "\x1b[37m",
-	gray: "\x1b[90m",
-	bgBlue: "\x1b[44m",
-	bgCyan: "\x1b[46m",
-	bgGray: "\x1b[100m",
+	reset:      RESET,
+	bold:       BOLD,
+	dim:        DIM,
+	italic:     ITALIC,
+	underline:  UNDERLINE,
+	inverse:    "\x1b[7m",
+	// ── Electric Amber palette ───────────────────────────────────────
+	red:        ROSE,
+	green:      SAGE,
+	yellow:     STONE,
+	blue:       ICE,
+	magenta:    LAVENDER,
+	cyan:       AMBER,
+	white:      "\x1b[37m",
+	gray:       ASH,
+	// ── Terminal control ─────────────────────────────────────────────
+	bgBlue:     "\x1b[44m",
+	bgCyan:     "\x1b[46m",
+	bgGray:     "\x1b[100m",
 	clearScreen: "\x1b[2J",
 	cursorHome: "\x1b[H",
 	hideCursor: "\x1b[?25l",
 	showCursor: "\x1b[?25h",
-	altScreenOn: "\x1b[?1049h",
+	altScreenOn:  "\x1b[?1049h",
 	altScreenOff: "\x1b[?1049l",
 };
 
@@ -92,11 +98,11 @@ function getHeight(): number {
 	return process.stdout.rows || 24;
 }
 
-function hline(ch = "━", color = c.cyan): string {
+function hline(ch = "━", color = AMBER): string {
 	return `${color}${ch.repeat(getWidth())}${c.reset}`;
 }
 
-function centeredHeader(text: string, color = c.cyan): string {
+function centeredHeader(text: string, color = AMBER): string {
 	const w = getWidth();
 	const stripped = text.replace(/\x1b\[[0-9;]*m/g, "");
 	const pad = Math.max(0, w - stripped.length - 4);
