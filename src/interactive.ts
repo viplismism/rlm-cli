@@ -14,12 +14,12 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as readline from "node:readline";
 import { stdin, stdout } from "node:process";
+import { fileURLToPath } from "node:url";
 import {
-	RESET, BOLD, DIM, ITALIC, UNDERLINE,
+	RESET, BOLD, DIM,
 	AMBER, AMBER_DIM, SAGE, ICE, LAVENDER, STONE, ASH, DARK_ASH, ROSE,
 	paint, printPanel,
 } from "./colors.js";
-
 // Global error handlers — prevent raw stack traces from leaking to terminal
 process.on("uncaughtException", (err) => {
 	console.error(`\n  \x1b[31mUnexpected error: ${err.message}\x1b[0m\n`);
@@ -46,8 +46,8 @@ const c = {
 	reset:     RESET,
 	bold:      BOLD,
 	dim:       DIM,
-	italic:    ITALIC,
-	underline: UNDERLINE,
+	italic:    "\x1b[3m",
+	underline: "\x1b[4m",
 	// ── rlm identity: Electric Amber (true RGB) ────────────────────
 	accent:    AMBER,        // electric amber — primary
 	accentDim: AMBER_DIM,    // deep amber — secondary
@@ -327,40 +327,168 @@ function handleMultiLineAsContext(input: string): { context: string; query: stri
 // ── Banner ──────────────────────────────────────────────────────────────────
 
 function printBanner(): void {
-	const amber = c.accent;
-	const dim = c.dim;
-	const reset = c.reset;
-	const bold = c.bold;
+	// Wide pixel-art RLM logo — amber on black
+	const a = `${AMBER}${BOLD}`;
+	const r = RESET;
 	console.log(`
-${amber}${bold}  ██████╗ ██╗     ███╗   ███╗${reset}
-${amber}${bold}  ██╔══██╗██║     ████╗ ████║${reset}
-${amber}${bold}  ██████╔╝██║     ██╔████╔██║${reset}
-${amber}${bold}  ██╔══██╗██║     ██║╚██╔╝██║${reset}
-${amber}${bold}  ██║  ██║███████╗██║ ╚═╝ ██║${reset}
-${amber}${bold}  ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝${reset}
-${dim}  recursive language models · arXiv:2512.24601${reset}
+${a}    ██████╗ ██╗     ███╗   ███╗${r}
+${a}    ██╔══██╗██║     ████╗ ████║${r}
+${a}    ██████╔╝██║     ██╔████╔██║${r}
+${a}    ██╔══██╗██║     ██║╚██╔╝██║${r}
+${a}    ██║  ██║███████╗██║ ╚═╝ ██║${r}
+${a}    ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝${r}
+${paint("    recursive language models · arXiv:2512.24601", DIM)}
 `);
 }
 
-// ── Status line ─────────────────────────────────────────────────────────────
+// ── Version ──────────────────────────────────────────────────────────────────
+
+function loadVersion(): string {
+	try {
+		const __dir = path.dirname(fileURLToPath(import.meta.url));
+		const pkgPath = path.join(__dir, "..", "package.json");
+		const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as { version?: string };
+		return pkg.version ? `v${pkg.version}` : "";
+	} catch { return ""; }
+}
+
+// ── Welcome panel (Feynman-style two-column) ──────────────────────────────────
+
+function printWelcomePanel(): void {
+	const termW = Math.min(process.stdout.columns || 100, 110);
+	const version = loadVersion();
+
+	// Panel dimensions
+	const PANEL_W = Math.min(termW - 4, 96);  // total inner width (excl. borders)
+	const LEFT_W  = 36;                        // left column content width
+	const RIGHT_W = PANEL_W - LEFT_W - 3;     // right column (│ sep + padding)
+
+	const provider    = currentProviderName || detectProvider();
+	const modelShort  = currentModelId.length > LEFT_W
+		? currentModelId.slice(0, LEFT_W - 1) + "…"
+		: currentModelId;
+	const cwdShort    = process.cwd().replace(os.homedir(), "~").slice(0, LEFT_W);
+	const ctxInfo     = contextText
+		? `${(contextText.length / 1024).toFixed(1)}KB${contextSource ? ` · ${contextSource}` : ""}`
+		: "none";
+	const ctxDisplay  = ctxInfo.length > LEFT_W ? ctxInfo.slice(0, LEFT_W - 1) + "…" : ctxInfo;
+
+	// Left column rows  [label, value]
+	const leftRows: [string, string][] = [
+		["model",     modelShort],
+		["provider",  provider],
+		["directory", cwdShort],
+		["context",   ctxDisplay],
+		["",          ""],
+		["max iters", String(config.max_iterations)],
+		["sub-queries", String(config.max_sub_queries)],
+		["queries run", String(queryCount)],
+	];
+
+	// Right column: slash command reference
+	const rightRows: [string, string][] = [
+		["/file <path>",   "load file / dir / glob"],
+		["/url <url>",     "fetch URL as context"],
+		["/paste",         "multi-line paste"],
+		["@file <query>",  "inline load + query"],
+		["",               ""],
+		["/model",         "list / switch model"],
+		["/provider",      "switch provider"],
+		["/key",           "update API key"],
+		["",               ""],
+		["/trajectories",  "browse saved runs"],
+		["/context",       "show loaded context"],
+		["/clear",         "clear screen"],
+		["/help",          "all commands"],
+		["/quit",          "exit"],
+	];
+
+	const border = "─".repeat(PANEL_W + 2);
+
+	// Version tag centered in top border
+	const vTag    = version ? ` ${version} ` : "";
+	const vTagLen = vTag.length;
+	const lDash   = Math.floor((PANEL_W + 2 - vTagLen) / 2);
+	const rDash   = PANEL_W + 2 - vTagLen - lDash;
+	const topBorder = `${DARK_ASH}${BOLD}┌${"─".repeat(lDash)}${RESET}${DIM}${vTag}${RESET}${DARK_ASH}${BOLD}${"─".repeat(rDash)}┐${RESET}`;
+
+	// Column header
+	const renderHeader = (left: string, right: string): string => {
+		const lPad = Math.max(0, LEFT_W - left.length);
+		const rPad = Math.max(0, RIGHT_W - right.length);
+		return `${DARK_ASH}${BOLD}│${RESET} ${AMBER}${BOLD}${left}${" ".repeat(lPad)}${RESET} ${DARK_ASH}${BOLD}│${RESET} ${AMBER}${BOLD}${right}${" ".repeat(rPad)}${RESET} ${DARK_ASH}${BOLD}│${RESET}`;
+	};
+
+	// Separator row (├──┤)
+	const sepBorder = `${DARK_ASH}${BOLD}├${"─".repeat(LEFT_W + 2)}┼${"─".repeat(RIGHT_W + 2)}┤${RESET}`;
+
+	// Content row
+	const renderRow = (leftLabel: string, leftVal: string, rightCmd: string, rightDesc: string): string => {
+		// Left cell
+		let leftCell: string;
+		if (!leftLabel && !leftVal) {
+			leftCell = " ".repeat(LEFT_W);
+		} else {
+			const lbl = paint(leftLabel.padEnd(11), DIM);
+			const val = paint(leftVal.slice(0, LEFT_W - 12), STONE);
+			const rawLen = leftLabel.padEnd(11).length + leftVal.slice(0, LEFT_W - 12).length;
+			const lPad = " ".repeat(Math.max(0, LEFT_W - rawLen));
+			leftCell = `${lbl} ${val}${lPad}`;
+		}
+
+		// Right cell
+		let rightCell: string;
+		if (!rightCmd && !rightDesc) {
+			rightCell = " ".repeat(RIGHT_W);
+		} else {
+			const cmd  = paint(rightCmd.padEnd(18), SAGE);
+			const desc = paint(rightDesc.slice(0, RIGHT_W - 19), ASH);
+			const rawLen = 18 + rightDesc.slice(0, RIGHT_W - 19).length;
+			const rPad = " ".repeat(Math.max(0, RIGHT_W - rawLen));
+			rightCell = `${cmd} ${desc}${rPad}`;
+		}
+
+		return `${DARK_ASH}${BOLD}│${RESET} ${leftCell} ${DARK_ASH}${BOLD}│${RESET} ${rightCell} ${DARK_ASH}${BOLD}│${RESET}`;
+	};
+
+	const rows = Math.max(leftRows.length, rightRows.length);
+
+	// Print
+	console.log(topBorder);
+	console.log(renderHeader("Session", "Slash Commands"));
+	console.log(sepBorder);
+	for (let i = 0; i < rows; i++) {
+		const [ll, lv] = leftRows[i] ?? ["", ""];
+		const [rc, rd] = rightRows[i] ?? ["", ""];
+		console.log(renderRow(ll, lv, rc, rd));
+	}
+	console.log(`${DARK_ASH}${BOLD}└${"─".repeat(LEFT_W + 2)}┴${"─".repeat(RIGHT_W + 2)}┘${RESET}`);
+}
+
+// ── Status line (compact — used after queries) ───────────────────────────────
 
 function printStatusLine(): void {
-	const provider = currentProviderName || detectProvider();
-	const modelShort = currentModelId.length > 40
+	const provider    = currentProviderName || detectProvider();
+	const modelShort  = currentModelId.length > 40
 		? currentModelId.slice(0, 37) + "…"
 		: currentModelId;
 	const ctxInfo = contextText
 		? `${paint("●", SAGE)} ${paint((contextText.length / 1024).toFixed(1) + "KB", STONE)}${contextSource ? paint(` (${contextSource})`, DIM) : ""}`
 		: paint("○ no context", DIM);
 
-	const subtitleLines = [
-		`${paint(modelShort, AMBER)}  ${paint(provider, DIM)}`,
-		`${ctxInfo}  ${paint(`queries: ${queryCount}`, DIM)}`,
-	];
-	printPanel("rlm · recursive language models", subtitleLines, 53);
+	console.log(
+		`  ${paint(modelShort, AMBER)}  ${paint(provider, DIM)}  ${ctxInfo}  ${paint(`Q:${queryCount}`, DIM)}`
+	);
 }
 
-// ── Directory tree ──────────────────────────────────────────────────────────
+// ── Welcome ──────────────────────────────────────────────────────────────────
+
+function printWelcome(): void {
+	console.clear();
+	printBanner();
+	printWelcomePanel();
+	console.log(paint(`\n  Type your query or /help for commands\n`, DIM));
+}
 
 /** Generate a concise directory tree string (like `tree -L 2`). */
 function generateDirTree(dir: string, prefix = "", depth = 0, maxDepth = 2): string {
@@ -410,17 +538,6 @@ function buildCwdContext(): string {
 	const parts = [`Working directory: ${cwd}\n`];
 	if (tree) parts.push(`File tree:\n${tree}`);
 	return parts.join("\n");
-}
-
-// ── Welcome ─────────────────────────────────────────────────────────────────
-
-function printWelcome(): void {
-	console.clear();
-	printBanner();
-	const cwdShort = process.cwd().replace(os.homedir(), "~");
-	console.log(paint(`  ${cwdShort}`, DIM));
-	printStatusLine();
-	console.log(paint(`  ◇  max ${config.max_iterations} iters · ${config.max_sub_queries} sub-queries · type /help for commands\n`, DIM));
 }
 
 // ── Help ────────────────────────────────────────────────────────────────────
