@@ -22,6 +22,12 @@ import {
 import type { ExecResult, PythonRepl } from "./repl.js";
 import { loadConfig, type RlmConfig } from "./config.js";
 
+/** Wrapper that injects a placeholder apiKey for local providers that don't need one (e.g. Ollama). */
+function callModel(model: Model<Api>, context: Parameters<typeof completeSimple>[1]) {
+	const apiKey = (model.provider as string) === "ollama" ? "ollama" : undefined;
+	return completeSimple(model, context, apiKey ? { apiKey } : undefined);
+}
+
 // ── Load config ─────────────────────────────────────────────────────────────
 
 const config = loadConfig();
@@ -333,7 +339,7 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 		});
 
 		const response = await raceAbort(
-			completeSimple(subCallModel, {
+			callModel(subCallModel, {
 				systemPrompt: `You are a helpful assistant. Answer the user's question based on the provided context. Be concise but thorough. Do not write code — respond in natural language.`,
 				messages: [
 					{
@@ -421,7 +427,7 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 		let response;
 		try {
 			response = await raceAbort(
-				completeSimple(model, {
+				callModel(model, {
 					systemPrompt,
 					messages: conversationHistory,
 				}),
