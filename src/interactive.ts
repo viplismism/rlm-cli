@@ -14,6 +14,11 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as readline from "node:readline";
 import { stdin, stdout } from "node:process";
+import {
+	RESET, BOLD, DIM, ITALIC, UNDERLINE,
+	AMBER, AMBER_DIM, SAGE, ICE, LAVENDER, STONE, ASH, DARK_ASH, ROSE,
+	paint, printPanel,
+} from "./colors.js";
 
 // Global error handlers — prevent raw stack traces from leaking to terminal
 process.on("uncaughtException", (err) => {
@@ -38,19 +43,27 @@ const config = loadConfig();
 // ── ANSI helpers ────────────────────────────────────────────────────────────
 
 const c = {
-	reset: "\x1b[0m",
-	bold: "\x1b[1m",
-	dim: "\x1b[2m",
-	italic: "\x1b[3m",
-	underline: "\x1b[4m",
-	red: "\x1b[31m",
-	green: "\x1b[32m",
-	yellow: "\x1b[33m",
-	blue: "\x1b[34m",
-	magenta: "\x1b[35m",
-	cyan: "\x1b[36m",
-	white: "\x1b[37m",
-	gray: "\x1b[90m",
+	reset:     RESET,
+	bold:      BOLD,
+	dim:       DIM,
+	italic:    ITALIC,
+	underline: UNDERLINE,
+	// ── rlm identity: Electric Amber (true RGB) ────────────────────
+	accent:    AMBER,        // electric amber — primary
+	accentDim: AMBER_DIM,    // deep amber — secondary
+	result:    SAGE,         // soft green — success / result
+	code:      ICE,          // ice blue — code blocks
+	subquery:  LAVENDER,     // soft lavender — sub-queries
+	// ── semantic aliases ───────────────────────────────────────────
+	cyan:      AMBER,        // alias → accent (amber) for backward compat
+	green:     SAGE,         // alias → result
+	magenta:   LAVENDER,     // alias → subquery
+	// ── stable colors ─────────────────────────────────────────────
+	red:       ROSE,
+	yellow:    STONE,
+	blue:      ICE,
+	white:     "\x1b[37m",
+	gray:      ASH,
 	clearLine: "\x1b[2K\r",
 };
 
@@ -314,16 +327,18 @@ function handleMultiLineAsContext(input: string): { context: string; query: stri
 // ── Banner ──────────────────────────────────────────────────────────────────
 
 function printBanner(): void {
+	const amber = c.accent;
+	const dim = c.dim;
+	const reset = c.reset;
+	const bold = c.bold;
 	console.log(`
-${c.cyan}${c.bold}
-                         ██████╗ ██╗     ███╗   ███╗
-                         ██╔══██╗██║     ████╗ ████║
-                         ██████╔╝██║     ██╔████╔██║
-                         ██╔══██╗██║     ██║╚██╔╝██║
-                         ██║  ██║███████╗██║ ╚═╝ ██║
-                         ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝
-${c.reset}
-${c.dim}         Recursive Language Models — arXiv:2512.24601${c.reset}
+${amber}${bold}  ██████╗ ██╗     ███╗   ███╗${reset}
+${amber}${bold}  ██╔══██╗██║     ████╗ ████║${reset}
+${amber}${bold}  ██████╔╝██║     ██╔████╔██║${reset}
+${amber}${bold}  ██╔══██╗██║     ██║╚██╔╝██║${reset}
+${amber}${bold}  ██║  ██║███████╗██║ ╚═╝ ██║${reset}
+${amber}${bold}  ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝${reset}
+${dim}  recursive language models · arXiv:2512.24601${reset}
 `);
 }
 
@@ -331,16 +346,18 @@ ${c.dim}         Recursive Language Models — arXiv:2512.24601${c.reset}
 
 function printStatusLine(): void {
 	const provider = currentProviderName || detectProvider();
-	const modelShort = currentModelId.length > 35
-		? currentModelId.slice(0, 32) + "..."
+	const modelShort = currentModelId.length > 40
+		? currentModelId.slice(0, 37) + "…"
 		: currentModelId;
-	const ctx = contextText
-		? `${c.green}●${c.reset} ${(contextText.length / 1024).toFixed(1)}KB${contextSource ? ` ${c.dim}(${contextSource})${c.reset}` : ""}`
-		: `${c.dim}○${c.reset}`;
+	const ctxInfo = contextText
+		? `${paint("●", SAGE)} ${paint((contextText.length / 1024).toFixed(1) + "KB", STONE)}${contextSource ? paint(` (${contextSource})`, DIM) : ""}`
+		: paint("○ no context", DIM);
 
-	console.log(
-		`  ${c.dim}${modelShort}${c.reset} ${c.dim}(${provider})${c.reset}  ${ctx}  ${c.dim}Q:${queryCount}${c.reset}`
-	);
+	const subtitleLines = [
+		`${paint(modelShort, AMBER)}  ${paint(provider, DIM)}`,
+		`${ctxInfo}  ${paint(`queries: ${queryCount}`, DIM)}`,
+	];
+	printPanel("rlm · recursive language models", subtitleLines, 53);
 }
 
 // ── Directory tree ──────────────────────────────────────────────────────────
@@ -401,52 +418,57 @@ function printWelcome(): void {
 	console.clear();
 	printBanner();
 	const cwdShort = process.cwd().replace(os.homedir(), "~");
-	console.log(`  ${c.dim}${cwdShort}${c.reset}`);
+	console.log(paint(`  ${cwdShort}`, DIM));
 	printStatusLine();
-	console.log(`  ${c.dim}max ${config.max_iterations} iters · ${config.max_sub_queries} sub-queries · /help${c.reset}\n`);
+	console.log(paint(`  ◇  max ${config.max_iterations} iters · ${config.max_sub_queries} sub-queries · type /help for commands\n`, DIM));
 }
 
 // ── Help ────────────────────────────────────────────────────────────────────
 
 function printCommandHelp(): void {
+	const cmd = (s: string) => paint(s, AMBER, BOLD);
+	const kw  = (s: string) => paint(s, ICE);
+	const dim = (s: string) => paint(s, DIM);
+	const sec = (s: string) => `\n${paint(`  ◆ ${s}`, ICE, BOLD)}`;
+
 	console.log(`
-${c.bold}Loading Context${c.reset}
-  ${c.cyan}/file${c.reset} <path>              Load a single file
-  ${c.cyan}/file${c.reset} <p1> <p2> ...       Load multiple files
-  ${c.cyan}/file${c.reset} <dir>/              Load all files in a directory (recursive)
-  ${c.cyan}/file${c.reset} src/**/*.ts         Load files matching a glob pattern
-  ${c.cyan}/url${c.reset} <url>                Fetch URL as context
-  ${c.cyan}/paste${c.reset}                    Multi-line paste mode (type EOF to finish)
-  ${c.cyan}/context${c.reset}                  Show loaded context info + file list
-  ${c.cyan}/clear-context${c.reset}            Unload context
+${sec("Loading Context")}
+  ${cmd("/file")} <path>              Load a single file
+  ${cmd("/file")} <p1> <p2> …        Load multiple files
+  ${cmd("/file")} <dir>/             Load all files in a directory (recursive)
+  ${cmd("/file")} src/**/*.ts        Load files matching a glob pattern
+  ${cmd("/url")} <url>               Fetch URL as context
+  ${cmd("/paste")}                   Multi-line paste mode (type ${kw("EOF")} to finish)
+  ${cmd("/context")}                 Show loaded context info + file list
+  ${cmd("/clear-context")}           Unload context
 
-${c.bold}@ Shorthand${c.reset}  ${c.dim}(inline file loading)${c.reset}
-  ${c.cyan}@file.ts${c.reset} <query>           Load file and ask in one shot
-  ${c.cyan}@a.ts @b.ts${c.reset} <query>        Load multiple files + query
-  ${c.cyan}@src/${c.reset} <query>              Load directory + query
-  ${c.cyan}@src/**/*.ts${c.reset} <query>       Load glob + query
+${sec("@ Shorthand")}  ${dim("(inline file loading)")}
+  ${cmd("@file.ts")} <query>          Load file and ask in one shot
+  ${cmd("@a.ts @b.ts")} <query>       Load multiple files + query
+  ${cmd("@src/")} <query>             Load directory + query
+  ${cmd("@src/**/*.ts")} <query>      Load glob + query
 
-${c.bold}Model & Provider${c.reset}
-  ${c.cyan}/model${c.reset}                    List models for current provider
-  ${c.cyan}/model${c.reset} <#|id>              Switch model by number or ID
-  ${c.cyan}/provider${c.reset}                 Switch provider (Anthropic, OpenAI, Google, OpenRouter)
-  ${c.cyan}/key${c.reset}                      Update an API key
+${sec("Model & Provider")}
+  ${cmd("/model")}                   List models for current provider
+  ${cmd("/model")} <#|id>            Switch model by number or ID
+  ${cmd("/provider")}                Switch provider (Anthropic · OpenAI · Google · OpenRouter)
+  ${cmd("/key")}                     Update an API key
 
-${c.bold}Tools${c.reset}
-  ${c.cyan}/trajectories${c.reset}             List saved runs
+${sec("Tools")}
+  ${cmd("/trajectories")}            List saved runs
 
-${c.bold}General${c.reset}
-  ${c.cyan}/clear${c.reset}                    Clear screen
-  ${c.cyan}/help${c.reset}                     Show this help
-  ${c.cyan}/quit${c.reset}                     Exit
+${sec("General")}
+  ${cmd("/clear")}                   Clear screen
+  ${cmd("/help")}                    Show this help
+  ${cmd("/quit")}                    Exit
 
-${c.bold}Tips${c.reset}
-  ${c.dim}•${c.reset} Just type a question — no context needed for general queries
-  ${c.dim}•${c.reset} Paste a URL directly to fetch it as context
-  ${c.dim}•${c.reset} Paste 4+ lines of text to set it as context
-  ${c.dim}•${c.reset} ${c.bold}Ctrl+C${c.reset} stops a running query, ${c.bold}Ctrl+C twice${c.reset} exits
-  ${c.dim}•${c.reset} Directories skip node_modules, .git, dist, binaries, etc.
-  ${c.dim}•${c.reset} Limits: ${MAX_FILES} files max, ${MAX_TOTAL_BYTES / 1024 / 1024}MB total
+${sec("Tips")}
+  ${dim("◇")} Just type a question — no context needed for general queries
+  ${dim("◇")} Paste a URL directly to fetch it as context
+  ${dim("◇")} Paste 4+ lines of text to set it as context
+  ${dim("◇")} ${paint("Ctrl+C", BOLD)} stops a running query  ·  ${paint("Ctrl+C twice", BOLD)} exits
+  ${dim("◇")} Directories skip node_modules, .git, dist, binaries, etc.
+  ${dim("◇")} Limits: ${MAX_FILES} files max, ${MAX_TOTAL_BYTES / 1024 / 1024}MB total
 `);
 }
 
@@ -679,17 +701,17 @@ function displayCode(code: string): void {
 	const lineNumWidth = String(lines.length).length;
 	const codeMaxW = MAX_CONTENT_W - lineNumWidth - 1;
 
-	console.log(boxTop("Code", c.cyan));
+	console.log(boxTop("Code", c.code));
 	for (let i = 0; i < lines.length; i++) {
 		const wrapped = wrapText(lines[i], codeMaxW);
 		for (let j = 0; j < wrapped.length; j++) {
 			const prefix = j === 0
 				? `${c.dim}${String(i + 1).padStart(lineNumWidth)}${c.reset}`
 				: " ".repeat(lineNumWidth);
-			console.log(boxLine(`${prefix} ${c.cyan}${wrapped[j]}${c.reset}`, c.cyan));
+			console.log(`    ${c.code}\u258e${c.reset} ${prefix} ${c.code}${wrapped[j]}${c.reset}`);
 		}
 	}
-	console.log(boxBottom(c.cyan));
+	console.log(boxBottom(c.code));
 }
 
 function displayOutput(output: string): void {
@@ -733,30 +755,17 @@ function formatSize(chars: number): string {
 	return chars >= 1000 ? `${(chars / 1000).toFixed(1)}K` : `${chars}`;
 }
 
-function displaySubQueryStart(info: SubQueryStartInfo): void {
-	console.log(boxTop(`${c.magenta}Sub-query #${info.index}${c.reset}  ${c.dim}${formatSize(info.contextLength)} chars`, c.magenta));
-
-	const instrLines = info.instruction.split("\n").filter(l => l.trim());
-	for (const line of instrLines) {
-		for (const chunk of wrapText(line, MAX_CONTENT_W)) {
-			console.log(boxLine(`${c.dim}${chunk}${c.reset}`, c.magenta));
-		}
-	}
+function displaySubQueryStart(_info: SubQueryStartInfo): void {
+	// Nothing printed here — we wait for the result and show a single compact line
 }
 
 function displaySubQueryResult(info: SubQueryInfo): void {
 	const elapsed = (info.elapsedMs / 1000).toFixed(1);
-	const resultLines = info.resultPreview.split("\n");
-
-	console.log(boxLine("", c.magenta));
-	console.log(boxLine(`${c.green}Response:${c.reset}`, c.magenta));
-	for (const line of resultLines) {
-		for (const chunk of wrapText(line, MAX_CONTENT_W)) {
-			console.log(boxLine(`${c.green}${chunk}${c.reset}`, c.magenta));
-		}
-	}
-	console.log(boxBottom(c.magenta));
-	console.log(`    ${c.dim}${elapsed}s · ${formatSize(info.resultLength)} received${c.reset}`);
+	const instrPreview = truncateStr(info.instruction.replace(/\n/g, " "), 55);
+	const resultPreview = truncateStr(info.resultPreview.replace(/\n/g, " "), 45);
+	console.log(
+		`    ${c.subquery}↳${c.reset} ${c.dim}#${info.index}${c.reset}  ${instrPreview}  ${c.dim}→${c.reset}  ${c.result}${resultPreview}${c.reset}  ${c.dim}${elapsed}s${c.reset}`
+	);
 }
 
 // ── Available models list ────────────────────────────────────────────────────
@@ -1107,9 +1116,9 @@ async function runQuery(query: string): Promise<void> {
 					};
 
 					const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-					console.log(`\n  ${c.bold}Step ${info.iteration}${c.reset}${c.dim}/${info.maxIterations}  ${elapsed}s elapsed${c.reset}`);
+					console.log(`\n  ${paint(`◆ Iteration ${info.iteration}`, AMBER, BOLD)}  ${paint(`${elapsed}s elapsed`, DIM)}`);
 					stepRule();
-					spinner.start("Generating code");
+					spinner.start("reasoning\u2026");
 				}
 
 				if (info.phase === "executing" && info.code) {
@@ -1121,7 +1130,7 @@ async function runQuery(query: string): Promise<void> {
 					}
 
 					displayCode(info.code);
-					spinner.start("Executing");
+					spinner.start("executing\u2026");
 				}
 
 				if (info.phase === "checking_final") {
@@ -1143,14 +1152,14 @@ async function runQuery(query: string): Promise<void> {
 					}
 
 					const iterElapsed = ((Date.now() - iterStart) / 1000).toFixed(1);
-					const sqLabel = info.subQueries > 0 ? ` · ${info.subQueries} sub-queries` : "";
-					console.log(`\n    ${c.dim}${iterElapsed}s${sqLabel}${c.reset}`);
+					const sqLabel = info.subQueries > 0 ? `  ·  ${info.subQueries} sub-quer${info.subQueries !== 1 ? "ies" : "y"}` : "";
+					console.log(`\n    ${paint(`✓ ${iterElapsed}s${sqLabel}`, DIM)}`);
 				}
 			},
 			onSubQueryStart: (info: SubQueryStartInfo) => {
 				spinner.stop();
 				displaySubQueryStart(info);
-				spinner.start("");
+				spinner.start("querying\u2026");
 			},
 			onSubQuery: (info: SubQueryInfo) => {
 				subQueryCount++;
@@ -1160,7 +1169,7 @@ async function runQuery(query: string): Promise<void> {
 
 				spinner.stop();
 				displaySubQueryResult(info);
-				spinner.start("Executing");
+				spinner.start("executing\u2026");
 			},
 		});
 
@@ -1173,11 +1182,11 @@ async function runQuery(query: string): Promise<void> {
 
 		// Final answer
 		const totalSec = ((Date.now() - startTime) / 1000).toFixed(1);
-		const stats = `${result.iterations} step${result.iterations !== 1 ? "s" : ""} · ${result.totalSubQueries} sub-quer${result.totalSubQueries !== 1 ? "ies" : "y"} · ${totalSec}s`;
+		const stats = `${result.iterations} step${result.iterations !== 1 ? "s" : ""}  ·  ${result.totalSubQueries} sub-quer${result.totalSubQueries !== 1 ? "ies" : "y"}  ·  ${totalSec}s`;
 
 		const answerLines = result.answer.split("\n");
 		console.log();
-		console.log(boxTop(`${c.green}✔ Result${c.reset}  ${c.dim}${stats}`, c.green));
+		console.log(boxTop(`${paint("✓ Result", SAGE, BOLD)}  ${paint(stats, DIM)}`, c.green));
 		for (const line of answerLines) {
 			for (const chunk of wrapText(line, MAX_CONTENT_W)) {
 				console.log(boxLine(chunk, c.green));
@@ -1398,7 +1407,7 @@ async function interactive(): Promise<void> {
 	const rl = readline.createInterface({
 		input: stdin,
 		output: stdout,
-		prompt: `${c.cyan}>${c.reset} `,
+		prompt: `${c.cyan}❯${c.reset} `,
 		terminal: true,
 	});
 
