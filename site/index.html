@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>rlm-cli — Recursive Language Models</title>
+  <meta name="description" content="CLI for Recursive Language Models. Instead of dumping huge context into one LLM call, the model writes Python to process it — slicing, chunking, sub-querying, and building answers across iterations.">
+  <meta name="theme-color" content="#1a1a2e">
+
+  <!-- Open Graph -->
+  <meta property="og:title" content="rlm-cli — Recursive Language Models">
+  <meta property="og:description" content="The model writes code to think. Process massive contexts through recursive Python loops.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://github.com/viplismism/rlm-cli">
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+    /* ── Reset ─────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    /* ── Design Tokens ────────────────────────────────────── */
+    :root {
+      --bg-primary:    #0d0d14;
+      --bg-secondary:  #13132a;
+      --bg-card:       #1a1a2e;
+      --bg-code:       #0f0f1e;
+      --bg-hover:      #222244;
+
+      --amber:         #f5a623;
+      --amber-dim:     #c77d1a;
+      --amber-glow:    rgba(245, 166, 35, 0.15);
+      --amber-glow-strong: rgba(245, 166, 35, 0.3);
+
+      --ice-blue:      #7ec8e3;
+      --soft-green:    #87c38f;
+      --lavender:      #c4a8e0;
+      --red:           #e06c75;
+
+      --text-primary:  #e8e8f0;
+      --text-secondary:#8888a8;
+      --text-dim:      #555570;
+
+      --border:        #2a2a44;
+      --border-amber:  rgba(245, 166, 35, 0.25);
+
+      --radius:        8px;
+      --radius-lg:     12px;
+      --mono:          'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+      --sans:          'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+
+      --max-w:         1100px;
+    }
+
+    /* ── Base ──────────────────────────────────────────────── */
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--sans);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+    }
+
+    a { color: var(--amber); text-decoration: none; transition: color 0.2s; }
+    a:hover { color: var(--text-primary); }
+
+    /* ── Ambient background glow ─────────────────────────── */
+    body::before {
+      content: '';
+      position: fixed;
+      top: -40%;
+      left: -20%;
+      width: 80%;
+      height: 80%;
+      background: radial-gradient(ellipse, var(--amber-glow) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Layout ────────────────────────────────────────────── */
+    .container { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; position: relative; z-index: 1; }
+
+    /* ── Nav ───────────────────────────────────────────────── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: rgba(13, 13, 20, 0.85);
+      backdrop-filter: blur(16px);
+      border-bottom: 1px solid var(--border);
+      padding: 16px 0;
+    }
+    nav .container {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nav-brand {
+      font-family: var(--mono);
+      font-weight: 700;
+      font-size: 1.25rem;
+      color: var(--amber);
+      letter-spacing: -0.5px;
+    }
+    .nav-links { display: flex; gap: 28px; align-items: center; }
+    .nav-links a {
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: color 0.2s;
+    }
+    .nav-links a:hover { color: var(--text-primary); }
+
+    /* ── Hero ──────────────────────────────────────────────── */
+    .hero {
+      text-align: center;
+      padding: 100px 0 60px;
+    }
+    .hero-title {
+      font-size: clamp(2.5rem, 6vw, 4.5rem);
+      font-weight: 700;
+      line-height: 1.1;
+      color: var(--amber);
+      margin-bottom: 24px;
+    }
+    .hero-title span { color: var(--text-primary); }
+    .hero-sub {
+      font-size: clamp(1rem, 2.5vw, 1.3rem);
+      color: var(--text-secondary);
+      max-width: 680px;
+      margin: 0 auto 48px;
+      line-height: 1.7;
+    }
+
+    /* Install tabs */
+    .install-box {
+      max-width: 560px;
+      margin: 0 auto 40px;
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+    }
+    .install-tabs {
+      display: flex;
+      border-bottom: 1px solid var(--border);
+    }
+    .install-tab {
+      padding: 10px 20px;
+      font-family: var(--sans);
+      font-size: 0.85rem;
+      color: var(--text-dim);
+      cursor: pointer;
+      border: none;
+      background: transparent;
+      transition: all 0.2s;
+    }
+    .install-tab.active {
+      color: var(--amber);
+      box-shadow: inset 0 -2px 0 var(--amber);
+    }
+    .install-tab:hover { color: var(--text-secondary); }
+    .install-code {
+      padding: 18px 24px;
+      font-family: var(--mono);
+      font-size: 0.95rem;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .install-code code { white-space: nowrap; overflow-x: auto; }
+    .copy-btn {
+      background: none;
+      border: 1px solid var(--border);
+      color: var(--text-dim);
+      padding: 6px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.8rem;
+      font-family: var(--mono);
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+    .copy-btn:hover { border-color: var(--amber); color: var(--amber); }
+    .copy-btn.copied { color: var(--soft-green); border-color: var(--soft-green); }
+
+    /* Hero buttons */
+    .hero-actions { display: flex; gap: 16px; justify-content: center; flex-wrap: wrap; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 28px;
+      border-radius: var(--radius);
+      font-weight: 600;
+      font-size: 0.95rem;
+      transition: all 0.2s;
+      border: none;
+      cursor: pointer;
+    }
+    .btn-primary {
+      background: var(--amber);
+      color: var(--bg-primary);
+    }
+    .btn-primary:hover {
+      background: #fdb93d;
+      color: var(--bg-primary);
+      box-shadow: 0 0 30px var(--amber-glow-strong);
+    }
+    .btn-secondary {
+      background: transparent;
+      color: var(--text-primary);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover { border-color: var(--amber); color: var(--amber); }
+
+    /* ── Terminal mockup ──────────────────────────────────── */
+    .terminal-wrapper {
+      max-width: 800px;
+      margin: 60px auto;
+    }
+    .terminal {
+      background: var(--bg-code);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.4);
+    }
+    .terminal-bar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px 16px;
+      background: rgba(26, 26, 46, 0.8);
+      border-bottom: 1px solid var(--border);
+    }
+    .terminal-dot {
+      width: 12px; height: 12px; border-radius: 50%;
+    }
+    .terminal-dot.red { background: #ff5f57; }
+    .terminal-dot.yellow { background: #ffbd2e; }
+    .terminal-dot.green { background: #28ca42; }
+    .terminal-title {
+      flex: 1;
+      text-align: center;
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+    .terminal-body {
+      padding: 24px;
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      line-height: 1.8;
+      overflow-x: auto;
+    }
+    .t-amber { color: var(--amber); }
+    .t-dim { color: var(--text-dim); }
+    .t-green { color: var(--soft-green); }
+    .t-blue { color: var(--ice-blue); }
+    .t-lav { color: var(--lavender); }
+    .t-white { color: var(--text-primary); }
+    .t-bold { font-weight: 600; }
+
+    /* ── Section titles ───────────────────────────────────── */
+    .section { padding: 80px 0; }
+
+    .section-label {
+      text-transform: uppercase;
+      font-size: 0.75rem;
+      font-weight: 600;
+      letter-spacing: 2px;
+      color: var(--amber);
+      margin-bottom: 12px;
+    }
+    .section-title {
+      font-size: clamp(1.8rem, 4vw, 2.5rem);
+      font-weight: 700;
+      margin-bottom: 16px;
+      line-height: 1.2;
+    }
+    .section-desc {
+      color: var(--text-secondary);
+      font-size: 1.05rem;
+      max-width: 640px;
+      line-height: 1.7;
+    }
+
+    /* ── How It Works ─────────────────────────────────────── */
+    .how-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 20px;
+      margin-top: 48px;
+    }
+    .how-step {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 28px 24px;
+      transition: all 0.25s;
+    }
+    .how-step:hover {
+      border-color: var(--border-amber);
+      box-shadow: 0 0 30px var(--amber-glow);
+    }
+    .step-num {
+      font-family: var(--mono);
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--amber);
+      margin-bottom: 12px;
+      display: inline-block;
+      background: var(--amber-glow);
+      padding: 4px 10px;
+      border-radius: 4px;
+    }
+    .step-title {
+      font-size: 1.05rem;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+    .step-desc {
+      font-size: 0.9rem;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    /* ── Commands table ───────────────────────────────────── */
+    .commands-table {
+      margin-top: 40px;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2px;
+      background: var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      font-size: 0.9rem;
+    }
+    .cmd-row {
+      display: contents;
+    }
+    .cmd-key {
+      background: var(--bg-card);
+      padding: 14px 20px;
+      font-family: var(--mono);
+      font-size: 0.85rem;
+      color: var(--amber);
+      font-weight: 500;
+    }
+    .cmd-desc {
+      background: var(--bg-card);
+      padding: 14px 20px;
+      color: var(--text-secondary);
+    }
+
+    /* ── Provider cards ───────────────────────────────────── */
+    .provider-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 16px;
+      margin-top: 40px;
+    }
+    .provider-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+      transition: all 0.25s;
+    }
+    .provider-card:hover {
+      border-color: var(--border-amber);
+    }
+    .provider-name {
+      font-weight: 600;
+      font-size: 1.05rem;
+      margin-bottom: 6px;
+    }
+    .provider-model {
+      font-family: var(--mono);
+      font-size: 0.8rem;
+      color: var(--text-dim);
+    }
+
+    /* ── Features list ────────────────────────────────────── */
+    .features-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 24px;
+      margin-top: 48px;
+    }
+    .feature {
+      display: flex;
+      gap: 16px;
+      align-items: flex-start;
+    }
+    .feature-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      background: var(--amber-glow);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.2rem;
+      flex-shrink: 0;
+    }
+    .feature-title {
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .feature-desc {
+      color: var(--text-secondary);
+      font-size: 0.9rem;
+      line-height: 1.6;
+    }
+
+    /* ── Footer ────────────────────────────────────────────── */
+    footer {
+      border-top: 1px solid var(--border);
+      padding: 40px 0;
+      text-align: center;
+      color: var(--text-dim);
+      font-size: 0.85rem;
+    }
+    footer a { color: var(--text-secondary); }
+    footer a:hover { color: var(--amber); }
+    .footer-links { display: flex; gap: 24px; justify-content: center; margin-bottom: 16px; }
+
+    /* ── Responsive ────────────────────────────────────────── */
+    @media (max-width: 768px) {
+      .hero { padding: 60px 0 40px; }
+      .commands-table { grid-template-columns: 1fr; }
+      .cmd-row { display: block; }
+      .cmd-key { border-bottom: none; }
+      .nav-links { gap: 16px; }
+      .terminal-body { font-size: 0.75rem; padding: 16px; }
+    }
+
+    /* ── Scroll reveal animation ──────────────────────────── */
+    .reveal {
+      opacity: 0;
+      transform: translateY(24px);
+      transition: opacity 0.6s ease, transform 0.6s ease;
+    }
+    .reveal.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ── Nav ──────────────────────────────────────────────── -->
+  <nav>
+    <div class="container">
+      <a href="#" class="nav-brand">rlm</a>
+      <div class="nav-links">
+        <a href="#how">How it works</a>
+        <a href="#commands">Commands</a>
+        <a href="#providers">Providers</a>
+        <a href="https://github.com/viplismism/rlm-cli" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </nav>
+
+  <!-- ── Hero ─────────────────────────────────────────────── -->
+  <section class="hero">
+    <div class="container">
+      <h1 class="hero-title">The model writes code<br><span>to think.</span></h1>
+      <p class="hero-sub">
+        Instead of dumping a huge context into a single LLM call, rlm-cli lets the model
+        write Python code to process it — slicing, chunking, running sub-queries,
+        and building up an answer across multiple iterations. All from your terminal.
+      </p>
+
+      <!-- Install tabs -->
+      <div class="install-box" id="install-box">
+        <div class="install-tabs">
+          <button class="install-tab active" data-cmd="npm install -g rlm-cli">npm</button>
+          <button class="install-tab" data-cmd="npx rlm-cli">npx</button>
+          <button class="install-tab" data-cmd="git clone https://github.com/viplismism/rlm-cli.git && cd rlm-cli && npm i && npm link">source</button>
+        </div>
+        <div class="install-code">
+          <code id="install-cmd">npm install -g rlm-cli</code>
+          <button class="copy-btn" id="copy-btn" aria-label="Copy to clipboard">copy</button>
+        </div>
+      </div>
+
+      <div class="hero-actions">
+        <a href="#how" class="btn btn-primary">Get Started</a>
+        <a href="https://github.com/viplismism/rlm-cli" class="btn btn-secondary" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Terminal mockup ──────────────────────────────────── -->
+  <div class="container">
+    <div class="terminal-wrapper reveal">
+      <div class="terminal">
+        <div class="terminal-bar">
+          <span class="terminal-dot red"></span>
+          <span class="terminal-dot yellow"></span>
+          <span class="terminal-dot green"></span>
+          <span class="terminal-title">rlm — ~/project</span>
+        </div>
+        <div class="terminal-body">
+<span class="t-amber t-bold">  ██████╗ ██╗     ███╗   ███╗</span>
+<span class="t-amber t-bold">  ██╔══██╗██║     ████╗ ████║</span>
+<span class="t-amber t-bold">  ██████╔╝██║     ██╔████╔██║</span>
+<span class="t-amber t-bold">  ██╔══██╗██║     ██║╚██╔╝██║</span>
+<span class="t-amber t-bold">  ██║  ██║███████╗██║ ╚═╝ ██║</span>
+<span class="t-amber t-bold">  ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝</span>
+<span class="t-dim">  recursive language models · arXiv:2512.24601</span>
+
+  <span class="t-dim">claude-sonnet-4-6 (anthropic)  </span><span class="t-green">●</span><span class="t-dim"> 14.2KB (src/)  Q:0</span>
+  <span class="t-dim">max 15 iters · 50 sub-queries · /help</span>
+
+<span class="t-amber">❯</span> <span class="t-white">@src/ find all error handling patterns and categorize them</span>
+
+  <span class="t-dim">claude-sonnet-4-6 · 14.2KB context</span>
+
+  <span class="t-bold">Round 1</span>  <span class="t-dim">0.0s elapsed</span>
+  <span class="t-dim">──────────────────────────────────────────</span>
+    <span class="t-blue">▎</span> <span class="t-dim">1</span> <span class="t-blue">chunks = context.split("=== ")</span>
+    <span class="t-blue">▎</span> <span class="t-dim">2</span> <span class="t-blue">files = [c for c in chunks if c.strip()]</span>
+    <span class="t-blue">▎</span> <span class="t-dim">3</span> <span class="t-blue">results = await async_llm_query(files[:8],</span>
+    <span class="t-blue">▎</span> <span class="t-dim">4</span> <span class="t-blue">  "Find try/catch, .catch(), error handling")</span>
+
+    <span class="t-lav">↳</span> <span class="t-dim">#1</span>  main.ts error patterns  <span class="t-dim">→</span>  <span class="t-green">3 try-catch blocks, 1 process.on…</span>  <span class="t-dim">0.8s</span>
+    <span class="t-lav">↳</span> <span class="t-dim">#2</span>  rlm.ts error patterns  <span class="t-dim">→</span>  <span class="t-green">AbortError guard, REPL fallback…</span>  <span class="t-dim">1.2s</span>
+    <span class="t-lav">↳</span> <span class="t-dim">#3</span>  interactive.ts patterns  <span class="t-dim">→</span>  <span class="t-green">uncaughtException, file read…</span>  <span class="t-dim">0.9s</span>
+
+  <span class="t-green">╭─ ✔ Result  3 rounds · 8 sub-queries · 4.2s ────────╮</span>
+  <span class="t-green">│</span> <span class="t-white"><b>Error Handling Patterns in src/</b></span>
+  <span class="t-green">│</span>
+  <span class="t-green">│</span> <span class="t-white">1. <b>Global handlers</b> — process.on('uncaughtException')</span>
+  <span class="t-green">│</span> <span class="t-white">2. <b>Abort guards</b> — signal.throwIfAborted() + name check</span>
+  <span class="t-green">│</span> <span class="t-white">3. <b>File I/O</b> — try/catch around fs.readFileSync</span>
+  <span class="t-green">│</span> <span class="t-white">4. <b>Network</b> — AbortSignal.timeout + status checks</span>
+  <span class="t-green">│</span> <span class="t-white">5. <b>REPL errors</b> — stderr capture + graceful shutdown</span>
+  <span class="t-green">╰──────────────────────────────────────────────────╯</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── How It Works ─────────────────────────────────────── -->
+  <section class="section" id="how">
+    <div class="container">
+      <div class="reveal">
+        <p class="section-label">How it works</p>
+        <h2 class="section-title">Recursive thinking, not brute-force context stuffing.</h2>
+        <p class="section-desc">
+          The LLM doesn't just read your context — it writes Python code to process it.
+          Each iteration builds on the last. Sub-queries run in parallel. The answer emerges
+          through computation, not guessing.
+        </p>
+      </div>
+
+      <div class="how-grid">
+        <div class="how-step reveal">
+          <span class="step-num">01</span>
+          <h3 class="step-title">Context loads into a Python REPL</h3>
+          <p class="step-desc">Your files, URLs, or pasted text become a <code>context</code> variable in a persistent Python session.</p>
+        </div>
+        <div class="how-step reveal">
+          <span class="step-num">02</span>
+          <h3 class="step-title">LLM writes code to investigate</h3>
+          <p class="step-desc">Instead of answering directly, the model writes Python to slice, search, and analyze the data.</p>
+        </div>
+        <div class="how-step reveal">
+          <span class="step-num">03</span>
+          <h3 class="step-title">Sub-queries run in parallel</h3>
+          <p class="step-desc"><code>llm_query()</code> and <code>async_llm_query()</code> let the model ask focused questions about individual chunks.</p>
+        </div>
+        <div class="how-step reveal">
+          <span class="step-num">04</span>
+          <h3 class="step-title"><code>FINAL()</code> delivers the answer</h3>
+          <p class="step-desc">Once the model has enough evidence, it calls <code>FINAL(answer)</code> to return the synthesized result.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── What you type → what happens ─────────────────────── -->
+  <section class="section" id="examples">
+    <div class="container">
+      <div class="reveal">
+        <p class="section-label">What you type → what happens</p>
+        <h2 class="section-title">Ask a question or load context. That's it.</h2>
+      </div>
+
+      <div class="commands-table reveal" style="margin-top:40px">
+        <div class="cmd-row">
+          <div class="cmd-key">rlm</div>
+          <div class="cmd-desc">Interactive REPL — persistent session with context, model switching, trajectory saving</div>
+        </div>
+        <div class="cmd-row">
+          <div class="cmd-key">rlm run --file big.txt "summarize"</div>
+          <div class="cmd-desc">Single-shot mode — answer to stdout, progress to stderr, pipe-friendly</div>
+        </div>
+        <div class="cmd-row">
+          <div class="cmd-key">rlm viewer</div>
+          <div class="cmd-desc">Browse saved trajectories in a TUI — inspect code, output, and sub-queries per iteration</div>
+        </div>
+        <div class="cmd-row">
+          <div class="cmd-key">rlm benchmark oolong</div>
+          <div class="cmd-desc">Run standard long-context benchmarks — compare direct LLM vs RLM on the same query</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Commands ─────────────────────────────────────────── -->
+  <section class="section" id="commands">
+    <div class="container">
+      <div class="reveal">
+        <p class="section-label">Interactive commands</p>
+        <h2 class="section-title">Slash commands in the REPL.</h2>
+        <p class="section-desc">Load context, switch models, browse history — all without leaving the session.</p>
+      </div>
+
+      <div class="commands-table reveal" style="margin-top:40px">
+        <div class="cmd-row"><div class="cmd-key">@file.ts query</div><div class="cmd-desc">Load file and ask in one shot</div></div>
+        <div class="cmd-row"><div class="cmd-key">@src/ query</div><div class="cmd-desc">Load entire directory + query</div></div>
+        <div class="cmd-row"><div class="cmd-key">/file &lt;path&gt;</div><div class="cmd-desc">Load file, directory, or glob pattern as context</div></div>
+        <div class="cmd-row"><div class="cmd-key">/url &lt;url&gt;</div><div class="cmd-desc">Fetch URL as context</div></div>
+        <div class="cmd-row"><div class="cmd-key">/paste</div><div class="cmd-desc">Multi-line paste mode (type EOF to finish)</div></div>
+        <div class="cmd-row"><div class="cmd-key">/model &lt;id&gt;</div><div class="cmd-desc">Switch model by name or number</div></div>
+        <div class="cmd-row"><div class="cmd-key">/provider</div><div class="cmd-desc">Switch between Anthropic, OpenAI, Google, OpenRouter</div></div>
+        <div class="cmd-row"><div class="cmd-key">/context</div><div class="cmd-desc">Show loaded context info + file list</div></div>
+        <div class="cmd-row"><div class="cmd-key">/trajectories</div><div class="cmd-desc">List saved runs</div></div>
+        <div class="cmd-row"><div class="cmd-key">Ctrl+C</div><div class="cmd-desc">Stop running query · Ctrl+C twice to exit</div></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Features ─────────────────────────────────────────── -->
+  <section class="section" id="features">
+    <div class="container">
+      <div class="reveal">
+        <p class="section-label">Features</p>
+        <h2 class="section-title">Everything runs locally. No cloud platform required.</h2>
+      </div>
+
+      <div class="features-grid reveal">
+        <div class="feature">
+          <div class="feature-icon">⚡</div>
+          <div>
+            <p class="feature-title">Recursive loop</p>
+            <p class="feature-desc">Algorithm 1 from arXiv:2512.24601. Code → execute → observe → repeat until the answer is found.</p>
+          </div>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">🐍</div>
+          <div>
+            <p class="feature-title">Persistent Python REPL</p>
+            <p class="feature-desc">Full Python environment — variables carry across iterations. The model builds on its own previous work.</p>
+          </div>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">🔀</div>
+          <div>
+            <p class="feature-title">Parallel sub-queries</p>
+            <p class="feature-desc"><code>async_llm_query()</code> + <code>asyncio.gather()</code> for concurrent chunk processing. Fast even on massive contexts.</p>
+          </div>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">📂</div>
+          <div>
+            <p class="feature-title">Flexible context loading</p>
+            <p class="feature-desc">Files, directories, globs, URLs, pasted text. Up to 100 files / 10MB. Auto-skips binaries and <code>node_modules</code>.</p>
+          </div>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">🔄</div>
+          <div>
+            <p class="feature-title">Model agnostic</p>
+            <p class="feature-desc">Anthropic, OpenAI, Google, OpenRouter — switch on the fly. Works with any model that writes Python.</p>
+          </div>
+        </div>
+        <div class="feature">
+          <div class="feature-icon">📜</div>
+          <div>
+            <p class="feature-title">Trajectory viewer</p>
+            <p class="feature-desc">Every run is saved. Browse iterations, code, output, and sub-queries in a terminal TUI.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Providers ────────────────────────────────────────── -->
+  <section class="section" id="providers">
+    <div class="container">
+      <div class="reveal">
+        <p class="section-label">Providers</p>
+        <h2 class="section-title">Bring your own API key.</h2>
+        <p class="section-desc">First launch prompts for setup. Keys are saved to <code>~/.rlm/credentials</code> with 600 permissions.</p>
+      </div>
+
+      <div class="provider-grid reveal">
+        <div class="provider-card">
+          <p class="provider-name">Anthropic</p>
+          <p class="provider-model">claude-sonnet-4-6</p>
+        </div>
+        <div class="provider-card">
+          <p class="provider-name">OpenAI</p>
+          <p class="provider-model">gpt-4o</p>
+        </div>
+        <div class="provider-card">
+          <p class="provider-name">Google</p>
+          <p class="provider-model">gemini-2.5-flash</p>
+        </div>
+        <div class="provider-card">
+          <p class="provider-name">OpenRouter</p>
+          <p class="provider-model">auto (multi-provider)</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── CTA ──────────────────────────────────────────────── -->
+  <section class="section" style="text-align:center;">
+    <div class="container reveal">
+      <h2 class="section-title">Ready to think recursively?</h2>
+      <p class="section-desc" style="margin:0 auto 32px;">
+        One command. Node.js + Python. That's all you need.
+      </p>
+      <div class="hero-actions">
+        <a href="https://www.npmjs.com/package/rlm-cli" class="btn btn-primary" target="_blank" rel="noopener">Install from npm</a>
+        <a href="https://arxiv.org/abs/2512.24601" class="btn btn-secondary" target="_blank" rel="noopener">Read the paper</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── Footer ───────────────────────────────────────────── -->
+  <footer>
+    <div class="container">
+      <div class="footer-links">
+        <a href="https://github.com/viplismism/rlm-cli">GitHub</a>
+        <a href="https://www.npmjs.com/package/rlm-cli">npm</a>
+        <a href="https://arxiv.org/abs/2512.24601">arXiv Paper</a>
+      </div>
+      <p>MIT License · Built by <a href="https://github.com/viplismism">Vipul Maheshwari</a></p>
+    </div>
+  </footer>
+
+  <!-- ── Scripts ──────────────────────────────────────────── -->
+  <script>
+    // ── Install tab switching ──
+    const tabs = document.querySelectorAll('.install-tab');
+    const cmdEl = document.getElementById('install-cmd');
+    const copyBtn = document.getElementById('copy-btn');
+
+    tabs.forEach(tab => {
+      tab.addEventListener('click', () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        cmdEl.textContent = tab.dataset.cmd;
+      });
+    });
+
+    // ── Copy to clipboard ──
+    copyBtn.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(cmdEl.textContent);
+        copyBtn.textContent = 'copied!';
+        copyBtn.classList.add('copied');
+        setTimeout(() => {
+          copyBtn.textContent = 'copy';
+          copyBtn.classList.remove('copied');
+        }, 2000);
+      } catch {
+        // Fallback
+        const range = document.createRange();
+        range.selectNode(cmdEl);
+        window.getSelection().removeAllRanges();
+        window.getSelection().addRange(range);
+        document.execCommand('copy');
+        copyBtn.textContent = 'copied!';
+        setTimeout(() => { copyBtn.textContent = 'copy'; }, 2000);
+      }
+    });
+
+    // ── Scroll reveal ──
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('visible');
+        }
+      });
+    }, { threshold: 0.1 });
+
+    document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+  </script>
+
+</body>
+</html>
