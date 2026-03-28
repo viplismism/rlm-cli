@@ -4,10 +4,10 @@
 # Maximum iterations per query before giving up
 max_iterations: 20
 
-# Maximum recursive sub-agent depth
-max_depth: 3
+# Maximum recursive sub-agent depth (paper uses 1 — sub-calls are flat LLMs, not nested RLMs)
+max_depth: 1
 
-# Maximum total sub-queries across all depths
+# Maximum total sub-queries across all iterations
 max_sub_queries: 50
 
 # Truncate REPL output beyond this many characters
@@ -15,3 +15,11 @@ truncate_len: 5000
 
 # Preview lines shown in context metadata
 metadata_preview_lines: 20
+
+# Optional cheaper/faster model for sub-queries (paper uses GPT-5-mini for sub-calls, GPT-5 for root)
+# This is a key cost-saving strategy from arXiv:2512.24601.
+# Leave commented out to use the root model for all calls.
+# Examples:
+#   sub_model: gpt-4o-mini       # cheap, fast — good for chunked summarization
+#   sub_model: claude-haiku-3-5  # fastest Anthropic model
+# sub_model: gpt-4o-mini
