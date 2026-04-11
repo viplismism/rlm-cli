@@ -26,7 +26,7 @@ import type { Api, Model } from "@mariozechner/pi-ai";
 
 // ── Arg parsing ─────────────────────────────────────────────────────────────
 
-function usage(): never {
+function usage(exitCode = 1): never {
 	console.error(`
 rlm-cli — Recursive Language Model CLI (arXiv:2512.24601)
 
@@ -41,11 +41,12 @@ OPTIONS
   --verbose        Show iteration progress
 
 EXAMPLES
+  rlm run "Explain recursive language models"
   rlm run --file big.txt "List all classes"
   curl -s https://example.com/large.py | rlm run --stdin "Summarize"
   rlm run --url https://raw.githubusercontent.com/.../typing.py "Count public classes"
 `.trim());
-	process.exit(1);
+	process.exit(exitCode);
 }
 
 interface CliArgs {
@@ -79,7 +80,7 @@ function parseArgs(): CliArgs {
 		} else if (arg === "--verbose") {
 			verbose = true;
 		} else if (arg === "--help" || arg === "-h") {
-			usage();
+			usage(0);
 		} else if (!arg.startsWith("--")) {
 			positional.push(arg);
 		} else {
@@ -98,12 +99,6 @@ function parseArgs(): CliArgs {
 	}
 
 	const query = positional.join(" ");
-
-	if (!file && !url && !useStdin) {
-		console.error("Error: one of --file, --url, or --stdin is required");
-		usage();
-	}
-
 	return { modelId, file, url, useStdin, verbose, query };
 }
 
@@ -251,9 +246,12 @@ async function main(): Promise<void> {
 	} else if (args.url) {
 		console.error(`Fetching context from URL: ${args.url}`);
 		context = await fetchUrl(args.url);
-	} else {
+	} else if (args.useStdin) {
 		console.error("Reading context from stdin...");
 		context = await readStdin();
+	} else {
+		context = "";
+		console.error("No context provided; running query in general-purpose mode.");
 	}
 
 	console.error(`Context loaded: ${context.length.toLocaleString()} characters`);

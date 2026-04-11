@@ -38,9 +38,9 @@ ${sec("Usage")}
 
 ${sec("Run options")}
   ${cmd("--model")} <id>   Override model ${dim("(default: RLM_MODEL from .env)")}
-  ${cmd("--file")} <path>  Read context from a file
-  ${cmd("--url")} <url>    Fetch context from a URL
-  ${cmd("--stdin")}        Read context from stdin
+  ${cmd("--file")} <path>  Read context from a file ${dim("(optional)")}
+  ${cmd("--url")} <url>    Fetch context from a URL ${dim("(optional)")}
+  ${cmd("--stdin")}        Read context from stdin ${dim("(optional)")}
   ${cmd("--verbose")}      Show iteration progress
 
 ${sec("Configuration")}
@@ -52,7 +52,7 @@ ${sec("Configuration")}
 
   ${dim("rlm_config.yaml:")}
     max_iterations: 20
-    max_depth: 3
+    max_depth: 1
     max_sub_queries: 50
     truncate_len: 5000
 `.trim();
