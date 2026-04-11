@@ -19,7 +19,7 @@ Instead of dumping a huge context into a single LLM call, RLM lets the model wri
 - **Paper-aligned system prompt** — per-iteration budget awareness, sub-query strategy guidance, parallel async patterns from arXiv:2512.24601
 - **Session-based trajectories** — runs grouped into `~/.rlm/sessions/<session-id>/` instead of a flat directory
 - **Refreshed terminal UI** — Electric Amber RGB palette, two-column welcome panel with version in border, silent operation (no noise between queries)
-- **Depth enforcement** — `max_depth` now actually enforced (was tracked but never checked)
+- **Honest runtime limits** — `max_depth` is pinned to `1` because the current runtime implements flat paper-style sub-calls, not nested recursive RLM agents
 
 ---
 
@@ -110,6 +110,7 @@ Persistent session with a two-column welcome panel showing your model, provider,
 ### Single-Shot Mode
 
 ```bash
+rlm run "Explain recursive language models"
 rlm run --file large-file.txt "List all classes and their methods"
 rlm run --url https://example.com/data.txt "Summarize this"
 cat data.txt | rlm run --stdin "Count the errors"
@@ -165,7 +166,7 @@ Create `rlm_config.yaml` in your working directory:
 
 ```yaml
 max_iterations: 20       # Max iterations before giving up (1-100)
-max_depth: 1             # Max recursive sub-agent depth — paper uses 1
+max_depth: 1             # Fixed at 1 in the current runtime
 max_sub_queries: 50      # Max total sub-queries (1-500)
 truncate_len: 5000       # Truncate REPL output beyond this (500-50000)
 metadata_preview_lines: 20

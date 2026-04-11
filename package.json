@@ -16,6 +16,7 @@
   "scripts": {
     "dev": "tsx src/main.ts",
     "build": "tsc && cp src/runtime.py dist/",
+    "test": "npm run build && node --test test/*.test.mjs",
     "start": "node dist/main.js",
     "cli": "tsx src/cli.ts",
     "bench:oolong": "tsx benchmarks/oolong_synth.ts",

@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 
 export interface RlmConfig {
 	max_iterations: number;
-	max_depth: number;
+	max_depth: 1;
 	max_sub_queries: number;
 	truncate_len: number;
 	metadata_preview_lines: number;
@@ -19,7 +19,7 @@ export interface RlmConfig {
 
 const DEFAULTS: RlmConfig = {
 	max_iterations: 20,
-	max_depth: 1,  // paper uses depth=1: sub-calls are flat LLMs, not nested RLMs
+	max_depth: 1,  // current runtime implements paper-style flat sub-calls, not nested RLM recursion
 	max_sub_queries: 50,
 	truncate_len: 5000,
 	metadata_preview_lines: 20,
@@ -70,7 +70,7 @@ export function loadConfig(): RlmConfig {
 					typeof v === "number" && isFinite(v) ? Math.max(min, Math.min(max, Math.round(v))) : def;
 				return {
 					max_iterations: clamp(parsed.max_iterations, 1, 100, DEFAULTS.max_iterations),
-					max_depth: clamp(parsed.max_depth, 1, 10, DEFAULTS.max_depth),
+					max_depth: 1,
 					max_sub_queries: clamp(parsed.max_sub_queries, 1, 500, DEFAULTS.max_sub_queries),
 					truncate_len: clamp(parsed.truncate_len, 500, 50000, DEFAULTS.truncate_len),
 					metadata_preview_lines: clamp(parsed.metadata_preview_lines, 5, 100, DEFAULTS.metadata_preview_lines),

@@ -163,7 +163,38 @@ function parseTrajectoryMeta(filePath: string): Partial<TrajectoryData> | undefi
 }
 
 function listTrajectories(): FileEntry[] {
-	// Check both ~/.rlm/trajectories/ (default) and ./trajectories/ (legacy/local)
+	// Check ~/.rlm/sessions/ first (current storage), then legacy flat trajectories paths.
+	const sessionsDir = path.join(os.homedir(), ".rlm", "sessions");
+	if (fs.existsSync(sessionsDir)) {
+		const entries: FileEntry[] = [];
+		for (const session of fs.readdirSync(sessionsDir)) {
+			const sessionPath = path.join(sessionsDir, session);
+			let stat: fs.Stats;
+			try {
+				stat = fs.statSync(sessionPath);
+			} catch {
+				continue;
+			}
+			if (!stat.isDirectory()) continue;
+			for (const file of fs.readdirSync(sessionPath)) {
+				if (!file.endsWith(".json")) continue;
+				const full = path.join(sessionPath, file);
+				const fileStat = fs.statSync(full);
+				const traj = parseTrajectoryMeta(full) as TrajectoryData | undefined;
+				entries.push({
+					name: `${session}/${file}`,
+					path: full,
+					size: fileStat.size,
+					mtime: fileStat.mtime,
+					traj,
+				});
+			}
+		}
+		if (entries.length > 0) {
+			return entries.sort((a, b) => b.mtime.getTime() - a.mtime.getTime());
+		}
+	}
+
 	const homeDir = path.join(os.homedir(), ".rlm", "trajectories");
 	const localDir = path.resolve(process.cwd(), "trajectories");
 	const dir = fs.existsSync(homeDir) ? homeDir : localDir;
@@ -795,7 +826,7 @@ async function main(): Promise<void> {
 		const files = listTrajectories();
 		if (files.length === 0) {
 			console.error(
-				`${c.red}No trajectory files found in ~/.rlm/trajectories/${c.reset}\nRun a query first to generate trajectories.`,
+				`${c.red}No trajectory files found in ~/.rlm/sessions/${c.reset}\nRun a query first to generate trajectories.`,
 			);
 			process.exit(1);
 		}

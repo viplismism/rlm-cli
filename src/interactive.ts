@@ -23,12 +23,21 @@ import {
 	AMBER, AMBER_DIM, SAGE, ICE, LAVENDER, STONE, ASH, DARK_ASH, ROSE,
 	paint, printPanel,
 } from "./colors.js";
+import {
+	buildStatusBar,
+	joinColumns,
+	padAnsiRight,
+	renderCard,
+	visibleWidth,
+} from "./ui.js";
 // Global error handlers — prevent raw stack traces from leaking to terminal
 process.on("uncaughtException", (err) => {
+	cleanupShell();
 	console.error(`\n  \x1b[31mUnexpected error: ${err.message}\x1b[0m\n`);
 	process.exit(1);
 });
 process.on("unhandledRejection", (err: any) => {
+	cleanupShell();
 	console.error(`\n  \x1b[31mUnexpected error: ${err?.message || err}\x1b[0m\n`);
 	process.exit(1);
 });
@@ -68,6 +77,8 @@ const c = {
 	white:     "\x1b[37m",
 	gray:      ASH,
 	clearLine: "\x1b[2K\r",
+	bgPanel:   "\x1b[48;5;236m",
+	bgPanelAlt:"\x1b[48;5;234m",
 };
 
 // ── Spinner ─────────────────────────────────────────────────────────────────
@@ -130,6 +141,7 @@ let currentModel: Model<Api> | undefined;
 let currentProviderName = "";
 let contextText = "";
 let contextSource = "";
+let contextIsDefault = true;
 let queryCount = 0;
 let isRunning = false;
 
@@ -438,7 +450,6 @@ function printWelcomePanel(): void {
 		["/key",           "update API key"],
 		["",               ""],
 		["/trajectories",  "browse saved runs"],
-		["/context",       "show loaded context"],
 		["/clear",         "clear screen"],
 		["/help",          "all commands"],
 		["/quit",          "exit"],
@@ -599,7 +610,6 @@ ${sec("Loading Context")}
   ${cmd("/file")} src/**/*.ts        Load files matching a glob pattern
   ${cmd("/url")} <url>               Fetch URL as context
   ${cmd("/paste")}                   Multi-line paste mode (type ${kw("EOF")} to finish)
-  ${cmd("/context")}                 Show loaded context info + file list
   ${cmd("/clear-context")}           Unload context
 
 ${sec("@ Shorthand")}  ${dim("(inline file loading)")}
@@ -681,6 +691,7 @@ async function handleFile(arg: string): Promise<string | void> {
 		try {
 			contextText = fs.readFileSync(filePaths[0], "utf-8");
 			contextSource = path.relative(process.cwd(), filePaths[0]) || filePaths[0];
+			contextIsDefault = false;
 			const lines = contextText.split("\n").length;
 			console.log(
 				`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines.toLocaleString()} lines) from ${c.underline}${contextSource}${c.reset}`
@@ -717,6 +728,7 @@ async function handleUrl(arg: string): Promise<void> {
 	try {
 		contextText = await safeFetch(arg);
 		contextSource = arg;
+		contextIsDefault = false;
 		const lines = contextText.split("\n").length;
 		console.log(
 			`  ${c.green}✓${c.reset} Fetched ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines.toLocaleString()} lines)`
@@ -735,6 +747,7 @@ function handlePaste(rl: readline.Interface): Promise<void> {
 				rl.removeListener("line", onLine);
 				contextText = lines.join("\n");
 				contextSource = "(pasted)";
+				contextIsDefault = false;
 				console.log(
 					`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines.length} lines) from paste`
 				);
@@ -863,6 +876,19 @@ function boxBottom(color: string = c.dim): string {
 
 function stepRule(): void {
 	console.log(`    ${c.dim}${"─".repeat(BOX_W - 2)}${c.reset}`);
+}
+
+function displayUserPrompt(query: string): void {
+	const width = Math.max(24, Math.min(process.stdout.columns || 80, 110) - 8);
+	const contentWidth = Math.max(8, width - 4);
+	console.log();
+	for (const rawLine of query.split("\n")) {
+		const chunks = wrapText(rawLine || " ", contentWidth);
+		for (const chunk of chunks) {
+			const pad = " ".repeat(Math.max(0, contentWidth - stripAnsi(chunk).length));
+			console.log(`  ${c.bgPanelAlt || ""}${STONE}${BOLD}›${RESET}${c.bgPanelAlt || ""} ${chunk}${pad} ${RESET}`);
+		}
+	}
 }
 
 // ── Display functions ───────────────────────────────────────────────────────
@@ -1200,11 +1226,1043 @@ function loadMultipleFiles(filePaths: string[]): { text: string; count: number; 
 	return { text: parts.join("\n\n"), count: parts.length, totalBytes };
 }
 
-// ── Run RLM query ───────────────────────────────────────────────────────────
+// ── Codex-style shell state ────────────────────────────────────────────────
+
+type TranscriptEntry =
+	| { kind: "user"; text: string }
+	| { kind: "assistant"; text: string }
+	| { kind: "stats"; text: string }
+	| { kind: "event"; text: string; tone?: "info" | "success" | "error" }
+	| { kind: "queued"; text: string };
+
+type TraceEntry =
+	| {
+		kind: "iteration";
+		title: string;
+		status: string;
+		startedAt: number;
+		iteration: number;
+		userMessage: string;
+		systemPrompt: string;
+		code: string;
+		rawResponse: string;
+		stdout: string;
+		stderr: string;
+		elapsedMs: number;
+	  }
+	| {
+		kind: "subquery";
+		title: string;
+		status: string;
+		startedAt: number;
+		index: number;
+		contextLength: number;
+		instruction: string;
+		result: string;
+		elapsedMs: number;
+	  };
+
+type IterationTrace = Extract<TraceEntry, { kind: "iteration" }>;
+type SubqueryTrace = Extract<TraceEntry, { kind: "subquery" }>;
+
+interface SessionInfo {
+	id: string;
+	queries: number;
+	model: string;
+	isCurrent: boolean;
+}
+
+interface SessionQuery {
+	query: string;
+	model: string;
+	answerPreview: string;
+	fullAnswer: string;
+	elapsedMs: number;
+	iterations: number;
+	subQueries: number;
+}
+
+type ShellModal =
+	| { kind: "help"; scroll: number }
+	| { kind: "model"; selected: number; items: ModelChoice[] }
+	| { kind: "provider"; selected: number; items: ProviderChoice[] }
+	| { kind: "trace"; selected: number; scroll: number; expanded: boolean; querySelected: number; queryExpanded: boolean }
+	| { kind: "trajectories"; selected: number; scroll: number; expanded: boolean; sessions: SessionInfo[]; queries: SessionQuery[]; querySelected: number; queryExpanded: boolean };
+
+interface ModelChoice {
+	id: string;
+	provider: string;
+	label: string;
+	meta: string;
+}
+
+interface ProviderChoice {
+	id: string;
+	label: string;
+	meta: string;
+}
+
+let shellInput = "";
+let shellCursor = 0;
+let shellScroll = 0;
+let shellRenderPending = false;
+let shellActive = false;
+let shellDestroyed = false;
+let introVisible = true;
+let transcript: TranscriptEntry[] = [];
+let queuedSubmissions: string[] = [];
+let activeRunStatus = "";
+let activeRunStartedAt = 0;
+let traceEntries: TraceEntry[] = [];
+let traceHistory: { query: string; entries: TraceEntry[] }[] = [];
+let shellModal: ShellModal | null = null;
+let traceMessage = "";
+let liveRenderTimer: ReturnType<typeof setInterval> | null = null;
+let slashMenuIndex = 0;
+let transcriptRevision = 0;
+let previousFrame: string[] = [];
+let previousFrameWidth = 0;
+let previousFrameHeight = 0;
+let transcriptChunkCacheWidth = 0;
+let transcriptChunkCacheIntroVisible = true;
+let transcriptStaticRowsCache: string[] = [];
+let transcriptChunkRowsCache: string[][] = [];
+
+const SLASH_COMMANDS: { cmd: string; desc: string; needsArg?: boolean }[] = [
+	{ cmd: "/help", desc: "show command reference" },
+	{ cmd: "/model", desc: "choose model and reasoning effort" },
+	{ cmd: "/provider", desc: "switch provider" },
+	{ cmd: "/file", desc: "load file, directory, or glob as context", needsArg: true },
+	{ cmd: "/url", desc: "fetch a URL into context", needsArg: true },
+	{ cmd: "/clear", desc: "clear transcript" },
+	{ cmd: "/trace", desc: "open RLM trace window" },
+	{ cmd: "/trajectories", desc: "list saved runs" },
+	{ cmd: "/quit", desc: "exit the shell" },
+];
+
+const CURSOR_BG = "\x1b[48;5;118m\x1b[30m";
+const TRANSCRIPT_PAD = 0;
+const TURN_TEXT_INDENT = 0;
+const SHORTCUTS = [
+	`${paint("/help", STONE)} commands`,
+	`${paint("/model", STONE)} models`,
+	`${paint("/file", STONE)} context`,
+	`${paint("/provider", STONE)} provider`,
+	`${paint("/trace", STONE)} trace`,
+	`${paint("Ctrl+C", STONE)} stop`,
+].join(` ${paint("·", DARK_ASH)} `);
+
+function cleanupShell(): void {
+	if (!shellActive || shellDestroyed) return;
+	shellDestroyed = true;
+	if (liveRenderTimer) {
+		clearInterval(liveRenderTimer);
+		liveRenderTimer = null;
+	}
+	previousFrame = [];
+	previousFrameWidth = 0;
+	previousFrameHeight = 0;
+	transcriptChunkCacheWidth = 0;
+	transcriptChunkCacheIntroVisible = true;
+	transcriptStaticRowsCache = [];
+	transcriptChunkRowsCache = [];
+	try { stdout.write("\x1b[?25h"); } catch {}
+	try { stdout.write("\x1b[?1049l"); } catch {}
+	try { if (stdin.isTTY) stdin.setRawMode(false); } catch {}
+	try { stdin.pause(); } catch {}
+}
+
+function startLiveRenderTicker(): void {
+	if (liveRenderTimer) return;
+	liveRenderTimer = setInterval(() => {
+		if (isRunning) requestBackgroundRender();
+	}, 1000);
+}
+
+function stopLiveRenderTicker(): void {
+	if (!liveRenderTimer) return;
+	clearInterval(liveRenderTimer);
+	liveRenderTimer = null;
+}
+
+function requestRender(): void {
+	if (!shellActive || shellDestroyed) return;
+	if (shellRenderPending) return;
+	shellRenderPending = true;
+	setImmediate(() => {
+		shellRenderPending = false;
+		renderShell();
+	});
+}
+
+function renderNow(): void {
+	if (!shellActive || shellDestroyed) return;
+	shellRenderPending = false;
+	renderShell();
+}
+
+function requestBackgroundRender(): void {
+	if (!shellActive || shellDestroyed) return;
+	if (!shellModal && shellScroll > 0) return;
+	requestRender();
+}
+
+function shellWidth(): number {
+	return Math.max(60, process.stdout.columns || 80);
+}
+
+function shellHeight(): number {
+	return Math.max(20, process.stdout.rows || 24);
+}
+
+function lineScrollStep(): number {
+	return Math.max(6, Math.floor(shellHeight() / 5));
+}
+
+function contentWidth(width = shellWidth()): number {
+	return Math.max(24, width - TRANSCRIPT_PAD * 2);
+}
+
+function arraysEqual(a: string[], b: string[]): boolean {
+	if (a.length !== b.length) return false;
+	for (let i = 0; i < a.length; i++) {
+		if (a[i] !== b[i]) return false;
+	}
+	return true;
+}
+
+function statusItems(): string[] {
+	const provider = currentProviderName === "ollama" ? "ollama" : (currentProviderName || detectProvider());
+	const items = [
+		paint(currentModelId, AMBER),
+		paint(provider, DIM),
+		paint("rlm-cli", DIM),
+	];
+	if (queuedSubmissions.length > 0) items.push(paint(`queue ${queuedSubmissions.length}`, ICE));
+	return items;
+}
+
+function wordWrap(text: string, maxWidth: number): string[] {
+	if (!text) return [""];
+	const rawLines = text.split("\n");
+	const out: string[] = [];
+	for (const raw of rawLines) {
+		if (!raw.trim()) {
+			out.push("");
+			continue;
+		}
+		let line = raw;
+		while (line.length > maxWidth) {
+			let split = line.lastIndexOf(" ", maxWidth);
+			if (split <= 0 || split < Math.floor(maxWidth / 3)) split = maxWidth;
+			out.push(line.slice(0, split).trimEnd());
+			line = line.slice(split).trimStart();
+		}
+		out.push(line);
+	}
+	return out;
+}
+
+function formatAssistantText(text: string): string {
+	return text
+		.replace(/\*\*(.+?)\*\*/g, "$1")
+		.replace(/__(.+?)__/g, "$1")
+		.replace(/`([^`]+)`/g, "$1")
+		.replace(/^#{1,6}\s+/gm, "")
+		.replace(/^\s*[-*]\s+/gm, "• ")
+		.replace(/^\s*\d+\.\s+/gm, (m) => m.trimStart());
+}
+
+/** Apply inline markdown styling with ANSI codes to a single line. */
+function styleInline(line: string): string {
+	return line
+		.replace(/\*\*(.+?)\*\*/g, `${BOLD}$1${RESET}`)
+		.replace(/__(.+?)__/g, `${BOLD}$1${RESET}`)
+		.replace(/`([^`]+)`/g, `${ICE}$1${RESET}`);
+}
+
+/**
+ * Parse and render a markdown table block into aligned, styled lines.
+ * Input: array of raw table lines (|col|col|...).
+ * Returns styled output lines.
+ */
+function renderMarkdownTable(tableLines: string[], maxWidth: number): string[] {
+	// Parse rows
+	const rows: string[][] = [];
+	let alignRow = -1;
+	for (let i = 0; i < tableLines.length; i++) {
+		const cells = tableLines[i].split("|").map((c) => c.trim()).filter((_, idx, arr) => idx > 0 && idx < arr.length);
+		// Detect separator row (e.g. |---|---|)
+		if (cells.every((c) => /^[-:]+$/.test(c))) {
+			alignRow = i;
+			continue;
+		}
+		rows.push(cells);
+	}
+	if (rows.length === 0) return [];
+	// Compute column widths
+	const numCols = Math.max(...rows.map((r) => r.length));
+	const colWidths: number[] = [];
+	for (let c = 0; c < numCols; c++) {
+		colWidths[c] = Math.min(
+			Math.max(4, ...rows.map((r) => (r[c] || "").length)),
+			Math.max(8, Math.floor((maxWidth - numCols * 3 - 1) / numCols))
+		);
+	}
+	const out: string[] = [];
+	// Top border
+	const topBorder = `${DARK_ASH}┌${colWidths.map((w) => "─".repeat(w + 2)).join("┬")}┐${RESET}`;
+	out.push(topBorder);
+	for (let r = 0; r < rows.length; r++) {
+		const cells = rows[r];
+		const line = cells.map((cell, c) => {
+			const w = colWidths[c] || 8;
+			const truncated = cell.length > w ? cell.slice(0, w - 1) + "…" : cell;
+			const padded = truncated.padEnd(w);
+			return r === 0 ? ` ${BOLD}${padded}${RESET} ` : ` ${padded} `;
+		}).join(`${DARK_ASH}│${RESET}`);
+		out.push(`${DARK_ASH}│${RESET}${line}${DARK_ASH}│${RESET}`);
+		// After header row, add separator
+		if (r === 0) {
+			const sep = `${DARK_ASH}├${colWidths.map((w) => "─".repeat(w + 2)).join("┼")}┤${RESET}`;
+			out.push(sep);
+		}
+	}
+	// Bottom border
+	const bottomBorder = `${DARK_ASH}└${colWidths.map((w) => "─".repeat(w + 2)).join("┴")}┘${RESET}`;
+	out.push(bottomBorder);
+	return out;
+}
+
+/**
+ * Render markdown text into ANSI-styled lines.
+ * Handles: headers, bold, inline code, code blocks, tables, hr, lists.
+ */
+function renderMarkdownLines(text: string, maxWidth: number): string[] {
+	const rawLines = text.split("\n");
+	const out: string[] = [];
+	let i = 0;
+	while (i < rawLines.length) {
+		const line = rawLines[i];
+
+		// Fenced code block
+		if (line.trimStart().startsWith("```")) {
+			i++;
+			const codeLines: string[] = [];
+			while (i < rawLines.length && !rawLines[i].trimStart().startsWith("```")) {
+				codeLines.push(rawLines[i]);
+				i++;
+			}
+			if (i < rawLines.length) i++; // skip closing ```
+			for (const cl of codeLines) {
+				const truncated = cl.length > maxWidth ? cl.slice(0, maxWidth - 1) + "…" : cl;
+				out.push(`${ICE}${truncated}${RESET}`);
+			}
+			continue;
+		}
+
+		// Table block (consecutive lines starting with |)
+		if (line.trimStart().startsWith("|")) {
+			const tableLines: string[] = [];
+			while (i < rawLines.length && rawLines[i].trimStart().startsWith("|")) {
+				tableLines.push(rawLines[i]);
+				i++;
+			}
+			out.push(...renderMarkdownTable(tableLines, maxWidth));
+			continue;
+		}
+
+		// Horizontal rule
+		if (/^\s*[-*_]{3,}\s*$/.test(line)) {
+			out.push(`${DARK_ASH}${"─".repeat(Math.min(maxWidth, 40))}${RESET}`);
+			i++;
+			continue;
+		}
+
+		// Header
+		const headerMatch = line.match(/^(#{1,6})\s+(.*)/);
+		if (headerMatch) {
+			const content = headerMatch[2];
+			for (const wl of wordWrap(content, maxWidth)) {
+				out.push(`${AMBER}${BOLD}${wl}${RESET}`);
+			}
+			out.push("");
+			i++;
+			continue;
+		}
+
+		// Blank line
+		if (!line.trim()) {
+			out.push("");
+			i++;
+			continue;
+		}
+
+		// List items
+		const listMatch = line.match(/^(\s*)([-*])\s+(.*)/);
+		if (listMatch) {
+			const content = `• ${listMatch[3]}`;
+			for (const wl of wordWrap(content, maxWidth)) {
+				out.push(styleInline(wl));
+			}
+			i++;
+			continue;
+		}
+		const numListMatch = line.match(/^(\s*)(\d+)\.\s+(.*)/);
+		if (numListMatch) {
+			const content = `${numListMatch[2]}. ${numListMatch[3]}`;
+			for (const wl of wordWrap(content, maxWidth)) {
+				out.push(styleInline(wl));
+			}
+			i++;
+			continue;
+		}
+
+		// Regular paragraph text — wrap then style inline
+		for (const wl of wordWrap(line, maxWidth)) {
+			out.push(styleInline(wl));
+		}
+		i++;
+	}
+	return out;
+}
+
+function appendTranscript(entry: TranscriptEntry): void {
+	transcript.push(entry);
+	introVisible = false;
+	transcriptRevision++;
+	transcriptChunkCacheWidth = 0;
+	transcriptStaticRowsCache = [];
+	transcriptChunkRowsCache = [];
+	if (shellScroll === 0) requestRender();
+}
+
+function renderPromptBlock(text: string, width: number): string[] {
+	const outer = Math.max(20, width);
+	const contentW = Math.max(8, outer - 6); // │ › text pad │
+	const wrapped = wordWrap(text, contentW);
+	const lines: string[] = [];
+	lines.push(`${DARK_ASH}╭${"─".repeat(outer - 2)}╮${RESET}`);
+	for (const raw of wrapped) {
+		const plain = raw || " ";
+		const pad = " ".repeat(Math.max(0, contentW - plain.length));
+		lines.push(
+			`${DARK_ASH}│${RESET} ${c.bgPanelAlt}${STONE}${BOLD}›${RESET}${c.bgPanelAlt} ${plain}${pad}${RESET} ${DARK_ASH}│${RESET}`
+		);
+	}
+	lines.push(`${DARK_ASH}╰${"─".repeat(outer - 2)}╯${RESET}`);
+	return lines;
+}
+
+function formatLiveElapsed(startedAt: number, elapsedMs: number, status: string): string {
+	if (status === "completed" && elapsedMs > 0) return `${(elapsedMs / 1000).toFixed(1)}s`;
+	return `${((Date.now() - startedAt) / 1000).toFixed(1)}s`;
+}
+
+function renderLiveTraceCards(width: number): string[] {
+	if (!isRunning || traceEntries.length === 0) return [];
+	const panelWidth = Math.max(24, width - TRANSCRIPT_PAD * 2);
+	const recent = traceEntries.slice(-6);
+	const out: string[] = [];
+	let activeIndex = -1;
+	for (let i = recent.length - 1; i >= 0; i--) {
+		if (recent[i].status !== "completed") {
+			activeIndex = i;
+			break;
+		}
+	}
+	for (let i = 0; i < recent.length; i++) {
+		const entry = recent[i];
+		const isActive = i === (activeIndex >= 0 ? activeIndex : recent.length - 1);
+		const tone = entry.status === "completed" ? SAGE : STONE;
+		const marker = entry.status === "completed" ? paint("✓", SAGE) : paint("•", tone);
+		const title = entry.status === "completed"
+			? paint(entry.title, STONE)
+			: paint(entry.title, AMBER, BOLD);
+		const summary = paint(`${entry.status} · ${formatLiveElapsed(entry.startedAt, entry.elapsedMs, entry.status)}`, DIM);
+		out.push(`${marker} ${title} ${paint("·", DARK_ASH)} ${summary}`);
+		if (!isActive) continue;
+		const detailSource = entry.kind === "iteration"
+			? (entry.code ? entry.code : entry.userMessage || "(waiting for code)")
+			: `${entry.instruction}${entry.result ? `\n\n${entry.result}` : ""}`;
+		const preview = wordWrap(formatAssistantText(detailSource), Math.max(20, panelWidth - 4))
+			.map((line) => line.trim())
+			.filter((line) => line.length > 0)
+			.slice(0, 3);
+		for (const line of preview) {
+			out.push(`  ${paint("│", DARK_ASH)} ${paint(line || "", DIM)}`);
+		}
+	}
+	return out;
+}
+
+function renderAnswerBlock(text: string, width: number, statsText?: string): string[] {
+	const outer = Math.max(20, width);
+	const contentW = Math.max(8, outer - 4); // │ text pad │
+	const styledLines = renderMarkdownLines(text, contentW);
+	const lines: string[] = [];
+	const label = statsText ? ` ${statsText} ` : "";
+	const dashCount = Math.max(0, outer - 3 - label.length);
+	lines.push(`${DARK_ASH}╭─${RESET}${paint(label, DIM)}${DARK_ASH}${"─".repeat(dashCount)}╮${RESET}`);
+	for (const raw of styledLines) {
+		const vw = visibleWidth(raw);
+		const padLen = Math.max(0, contentW - vw);
+		lines.push(
+			`${DARK_ASH}│${RESET} ${raw}${RESET}${" ".repeat(padLen)} ${DARK_ASH}│${RESET}`
+		);
+	}
+	lines.push(`${DARK_ASH}╰${"─".repeat(outer - 2)}╯${RESET}`);
+	return lines;
+}
+
+function renderTranscriptEntryRows(index: number, width: number): string[] {
+	const entry = transcript[index];
+	if (!entry) return [];
+	if (entry.kind === "user") {
+		return renderPromptBlock(entry.text, width);
+	}
+	const prefix = " ".repeat(TURN_TEXT_INDENT);
+	if (entry.kind === "stats") {
+		if (index + 1 < transcript.length && transcript[index + 1].kind === "assistant") return [];
+		return [`${prefix}${paint(entry.text, DIM)}`];
+	}
+	if (entry.kind === "assistant") {
+		const prev = index > 0 ? transcript[index - 1] : null;
+		const statsLabel = prev?.kind === "stats" ? prev.text : undefined;
+		return renderAnswerBlock(entry.text, width, statsLabel);
+	}
+	if (entry.kind === "queued") {
+		return [`${prefix}${paint("Queued", ICE, BOLD)} ${paint(entry.text, DIM)}`];
+	}
+	const tone = entry.tone === "error" ? ROSE : entry.tone === "success" ? SAGE : STONE;
+	return wordWrap(entry.text, Math.max(20, width - TURN_TEXT_INDENT - 2)).map(
+		(line) => `${prefix}${paint("•", tone)} ${paint(line, entry.tone === "error" ? ROSE : DIM)}`
+	);
+}
+
+function rebuildTranscriptStaticCache(width: number): void {
+	transcriptChunkCacheWidth = width;
+	transcriptChunkCacheIntroVisible = introVisible;
+	transcriptChunkRowsCache = [];
+	transcriptStaticRowsCache = [];
+	if (introVisible) {
+		transcriptStaticRowsCache.push(`${paint("Recursive language model shell for long-context work.", AMBER, BOLD)}`);
+		transcriptStaticRowsCache.push(`${paint("Type a task, load files with /file or @path, and inspect runs with /trajectories.", DIM)}`);
+		transcriptStaticRowsCache.push("");
+	}
+	for (let i = 0; i < transcript.length; i++) {
+		const rows = renderTranscriptEntryRows(i, width);
+		transcriptChunkRowsCache.push(rows);
+		transcriptStaticRowsCache.push(...rows);
+	}
+}
+
+function ensureTranscriptStaticCache(width: number): void {
+	if (
+		transcriptChunkCacheWidth !== width ||
+		transcriptChunkCacheIntroVisible !== introVisible ||
+		transcriptChunkRowsCache.length !== transcript.length
+	) {
+		rebuildTranscriptStaticCache(width);
+	}
+}
+
+function renderTranscript(width: number, liveUpdates = true): string[] {
+	ensureTranscriptStaticCache(width);
+	const staticLines = transcriptStaticRowsCache;
+	if (!isRunning) return staticLines;
+	// Append dynamic "Working" line (not cached — changes every tick)
+	const out = [...staticLines];
+	if (!liveUpdates) {
+		out.push(`${paint("•", STONE)} ${paint("Working", STONE, BOLD)} ${paint("(live updates paused while scrolled · /trace for details)", DIM)}`);
+		return out;
+	}
+	const elapsed = activeRunStartedAt > 0 ? `${((Date.now() - activeRunStartedAt) / 1000).toFixed(1)}s` : "";
+	out.push(`${" ".repeat(TURN_TEXT_INDENT)}${paint("•", STONE)} ${paint("Working", STONE, BOLD)} ${paint(`(${activeRunStatus || "reasoning"}${elapsed ? ` · ${elapsed}` : ""} · /trace for details · Ctrl+C to interrupt)`, DIM)}`);
+	out.push(...renderLiveTraceCards(width));
+	return out;
+}
+
+function renderComposer(width: number): string[] {
+	const inner = Math.max(20, width - 2);
+	const prefix = "› ";
+	const maxText = Math.max(4, inner - prefix.length - 1);
+	const start = Math.max(0, shellCursor - maxText + 1);
+	const visibleText = shellInput.slice(start, start + maxText);
+	const cursorPos = Math.max(0, Math.min(visibleText.length, shellCursor - start));
+	const before = visibleText.slice(0, cursorPos);
+	const at = visibleText[cursorPos] ?? " ";
+	const after = visibleText.slice(Math.min(cursorPos + 1, visibleText.length));
+	const shown = `${before}${CURSOR_BG}${at}${RESET}${c.bgPanelAlt}${after}`;
+	const visibleLen = before.length + 1 + after.length;
+	const pad = " ".repeat(Math.max(0, maxText - visibleLen));
+	return [
+		`${c.bgPanelAlt}${STONE}${BOLD}›${RESET}${c.bgPanelAlt} ${shown}${pad}${RESET}`,
+	];
+}
+
+function getSlashMatches(): { cmd: string; desc: string; needsArg?: boolean }[] {
+	if (!shellInput.startsWith("/")) return [];
+	return SLASH_COMMANDS.filter((c) => c.cmd.startsWith(shellInput));
+}
+
+function renderSlashMenu(width: number): string[] {
+	const matches = getSlashMatches();
+	if (matches.length === 0) return [];
+	const lines: string[] = [];
+	lines.push("");
+	for (let i = 0; i < matches.length; i++) {
+		const m = matches[i];
+		const active = i === slashMenuIndex;
+		const marker = active ? paint("›", SAGE, BOLD) : " ";
+		const label = active ? paint(m.cmd.padEnd(18), AMBER, BOLD) : paint(m.cmd.padEnd(18), STONE);
+		const desc = paint(m.desc, DIM);
+		lines.push(`${marker} ${label}${desc}`);
+	}
+	return lines;
+}
+
+function helpLines(width: number): string[] {
+	const items = [
+		["/help", "show command reference"],
+		["/model", "open model switcher"],
+		["/provider", "open provider switcher"],
+		["/file <path> [query]", "load file, directory, or glob as context"],
+		["/url <url>", "fetch a URL into context"],
+		["/clear", "clear transcript"],
+		["/trace", "open RLM trace window"],
+		["/trajectories", "list saved runs"],
+		["/quit", "exit the shell"],
+		["Ctrl+O", "open trace window"],
+		["PgUp/PgDn", "scroll transcript"],
+	];
+	const left = items.map(([cmd]) => paint(cmd.padEnd(18), AMBER));
+	const right = items.map(([, desc]) => paint(desc, DIM));
+	const lines = joinColumns(left, right, 2);
+	return lines.map((line) => padAnsiRight(line, Math.max(20, width)));
+}
+
+function buildModelChoices(): ModelChoice[] {
+	const choices: ModelChoice[] = [];
+	const seen = new Set<string>();
+	for (const provider of getProviders()) {
+		if (!process.env[providerEnvKey(provider)]) continue;
+		for (const model of getModels(provider)) {
+			if (isModelExcluded(model.id) || seen.has(model.id)) continue;
+			seen.add(model.id);
+			choices.push({
+				id: model.id,
+				provider,
+				label: model.id,
+				meta: provider,
+			});
+		}
+	}
+	for (const [key] of ollamaModelMap) {
+		if (!key.startsWith("ollama:")) continue;
+		const name = key.slice("ollama:".length);
+		if (seen.has(name)) continue;
+		seen.add(name);
+		choices.push({
+			id: name,
+			provider: "ollama",
+			label: name,
+			meta: `ollama${ollamaSizes.get(name) ? ` · ${formatOllamaSize(ollamaSizes.get(name) || 0)}` : ""}`,
+		});
+	}
+	return choices;
+}
+
+function buildProviderChoices(): ProviderChoice[] {
+	const items: ProviderChoice[] = SETUP_PROVIDERS
+		.filter((p) => process.env[p.env])
+		.map((p) => ({
+			id: p.piProvider,
+			label: p.name,
+			meta: p.label,
+		}));
+	if (ollamaModelMap.size > 0) {
+		items.push({
+			id: "ollama",
+			label: "Ollama",
+			meta: "local",
+		});
+	}
+	return items;
+}
+
+function openHelpModal(): void {
+	shellModal = { kind: "help", scroll: 0 };
+	requestRender();
+}
+
+function openModelModal(): void {
+	const items = buildModelChoices();
+	const selected = Math.max(0, items.findIndex((item) => item.id === currentModelId));
+	shellModal = { kind: "model", items, selected };
+	requestRender();
+}
+
+function openProviderModal(): void {
+	const items = buildProviderChoices();
+	const selected = Math.max(0, items.findIndex((item) => item.id === currentProviderName));
+	shellModal = { kind: "provider", items, selected };
+	requestRender();
+}
+
+function openTraceModal(): void {
+	const allQueries = [...traceHistory];
+	if (traceEntries.length > 0) {
+		// Include current in-progress/last query
+		allQueries.push({ query: "(current)", entries: traceEntries });
+	}
+	shellModal = {
+		kind: "trace",
+		selected: Math.max(0, allQueries.length - 1),
+		scroll: 0,
+		expanded: false,
+		querySelected: 0,
+		queryExpanded: false,
+	};
+	requestRender();
+}
+
+function loadSessionList(): SessionInfo[] {
+	if (!fs.existsSync(SESSIONS_DIR)) return [];
+	return fs.readdirSync(SESSIONS_DIR)
+		.filter((s) => { try { return fs.statSync(path.join(SESSIONS_DIR, s)).isDirectory(); } catch { return false; } })
+		.sort()
+		.reverse()
+		.map((s) => {
+			const dir = path.join(SESSIONS_DIR, s);
+			const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
+			let model = "";
+			if (files.length > 0) {
+				try {
+					const first = JSON.parse(fs.readFileSync(path.join(dir, files[0]), "utf-8"));
+					model = first.model || "";
+				} catch {}
+			}
+			return { id: s, queries: files.length, model, isCurrent: s === SESSION_ID };
+		});
+}
+
+function loadSessionQueries(sessionId: string): SessionQuery[] {
+	const dir = path.join(SESSIONS_DIR, sessionId);
+	if (!fs.existsSync(dir)) return [];
+	return fs.readdirSync(dir)
+		.filter((f) => f.endsWith(".json"))
+		.sort()
+		.map((f) => {
+			try {
+				const d = JSON.parse(fs.readFileSync(path.join(dir, f), "utf-8"));
+				const answer = d.result?.answer || "";
+				return {
+					query: d.query || "(no query)",
+					model: d.model || "",
+					answerPreview: answer.replace(/\n/g, " ").slice(0, 120),
+					fullAnswer: answer,
+					elapsedMs: d.totalElapsedMs || 0,
+					iterations: d.iterations?.length || d.result?.iterations || 0,
+					subQueries: d.result?.totalSubQueries || 0,
+				};
+			} catch {
+				return { query: "(unreadable)", model: "", answerPreview: "", fullAnswer: "", elapsedMs: 0, iterations: 0, subQueries: 0 };
+			}
+		});
+}
+
+function openTrajectoriesModal(): void {
+	const sessions = loadSessionList();
+	shellModal = { kind: "trajectories", selected: 0, scroll: 0, expanded: false, sessions, queries: [], querySelected: 0, queryExpanded: false };
+	requestRender();
+}
+
+function closeModal(): void {
+	shellModal = null;
+	requestRender();
+}
+
+let _traceDetailCache: { key: string; lines: string[] } | null = null;
+
+function buildTraceDetail(entry: TraceEntry, width: number): string[] {
+	const cacheKey = `${entry.kind}:${entry.title}:${entry.status}:${width}`;
+	if (_traceDetailCache && _traceDetailCache.key === cacheKey) return _traceDetailCache.lines;
+	const inner = Math.max(20, width - 2);
+	if (entry.kind === "iteration") {
+		const sections = [
+			...renderCard("Prompt", wordWrap(entry.userMessage || "(none)", inner - 3), inner),
+			...renderCard("System Prompt", wordWrap(entry.systemPrompt || "(none)", inner - 3), inner),
+			...renderCard("Code", wordWrap(entry.code || "(none)", inner - 3), inner),
+		];
+		if (entry.stdout.trim()) sections.push(...renderCard("Output", wordWrap(entry.stdout, inner - 3), inner));
+		if (entry.stderr.trim()) sections.push(...renderCard("Error", wordWrap(entry.stderr, inner - 3), inner));
+		if (entry.rawResponse.trim()) sections.push(...renderCard("Model Response", wordWrap(entry.rawResponse, inner - 3), inner));
+		_traceDetailCache = { key: cacheKey, lines: sections };
+		return sections;
+	}
+	const result = [
+		...renderCard("Instruction", wordWrap(entry.instruction || "(none)", inner - 3), inner),
+		...renderCard("Context", wordWrap(`Context length: ${entry.contextLength.toLocaleString()} chars`, inner - 3), inner),
+		...renderCard("Result", wordWrap(entry.result || "(pending)", inner - 3), inner),
+	];
+	_traceDetailCache = { key: cacheKey, lines: result };
+	return result;
+}
+
+function renderModalView(width: number, height: number): string[] {
+	if (!shellModal) return [];
+	const lines: string[] = [];
+	if (shellModal.kind === "help") {
+		lines.push(paint("Commands", AMBER, BOLD));
+		lines.push(paint("Esc closes this window.", DIM));
+		lines.push("");
+		lines.push(...helpLines(width));
+		return lines;
+	}
+	if (shellModal.kind === "model") {
+		lines.push(paint("Select Model", AMBER, BOLD));
+		lines.push(paint("↑/↓ navigate · Enter select · Esc cancel", DIM));
+		lines.push("");
+		for (let i = 0; i < shellModal.items.length; i++) {
+			const item = shellModal.items[i];
+			const active = i === shellModal.selected;
+			const marker = active ? paint("›", SAGE, BOLD) : paint(" ", DIM);
+			const label = active ? paint(item.label, STONE, BOLD) : item.label;
+			lines.push(`${marker} ${padAnsiRight(label, Math.max(20, width - 26))} ${paint(item.meta, DIM)}`);
+		}
+		return lines;
+	}
+	if (shellModal.kind === "provider") {
+		lines.push(paint("Select Provider", AMBER, BOLD));
+		lines.push(paint("↑/↓ navigate · Enter select · Esc cancel", DIM));
+		lines.push("");
+		for (let i = 0; i < shellModal.items.length; i++) {
+			const item = shellModal.items[i];
+			const active = i === shellModal.selected;
+			const marker = active ? paint("›", SAGE, BOLD) : paint(" ", DIM);
+			const label = active ? paint(item.label, STONE, BOLD) : item.label;
+			lines.push(`${marker} ${padAnsiRight(label, Math.max(20, width - 24))} ${paint(item.meta, DIM)}`);
+		}
+		return lines;
+	}
+	if (shellModal.kind === "trajectories") {
+		const trajModal = shellModal;
+		if (trajModal.expanded && trajModal.queryExpanded) {
+			// Level 3: Full answer view for a single query
+			const q = trajModal.queries[Math.min(trajModal.querySelected, trajModal.queries.length - 1)];
+			const secs = (q.elapsedMs / 1000).toFixed(1);
+			lines.push(paint(`Query: ${q.query.slice(0, width - 10)}`, AMBER, BOLD));
+			lines.push(paint(`${q.model} · ${q.iterations} iter · ${q.subQueries} sub · ${secs}s`, DIM));
+			lines.push(paint("↑/↓ scroll · Esc back", DIM));
+			lines.push("");
+			const answerLines = q.fullAnswer
+				? renderMarkdownLines(q.fullAnswer, Math.max(20, width - 4))
+				: [paint("(no answer)", DIM)];
+			const detailHeight = Math.max(4, height - lines.length);
+			const maxScroll = Math.max(0, answerLines.length - detailHeight);
+			if (trajModal.scroll > maxScroll) trajModal.scroll = maxScroll;
+			for (let j = 0; j < detailHeight; j++) {
+				lines.push(answerLines[trajModal.scroll + j] ?? "");
+			}
+			return lines;
+		}
+		if (trajModal.expanded) {
+			// Level 2: Queries list within a session
+			const session = trajModal.sessions[Math.min(trajModal.selected, trajModal.sessions.length - 1)];
+			lines.push(paint(`Session: ${session.id}`, AMBER, BOLD));
+			if (trajModal.queries.length === 0) {
+				lines.push(paint("No queries in this session.", DIM));
+				return lines;
+			}
+			lines.push(paint("↑/↓ select · Enter view answer · Esc back", DIM));
+			lines.push("");
+			const inner = Math.max(20, width - 6);
+			for (let i = 0; i < trajModal.queries.length; i++) {
+				const q = trajModal.queries[i];
+				const active = i === trajModal.querySelected;
+				const marker = active ? paint("›", SAGE, BOLD) : paint(" ", DIM);
+				const secs = (q.elapsedMs / 1000).toFixed(1);
+				const qLabel = active ? paint(q.query.slice(0, inner), STONE, BOLD) : paint(q.query.slice(0, inner), DIM);
+				lines.push(`${marker} ${qLabel}`);
+				lines.push(`  ${paint(q.model, DIM)}  ${paint(`${q.iterations} iter · ${q.subQueries} sub · ${secs}s`, DIM)}`);
+				if (q.answerPreview) {
+					lines.push(`  ${paint(q.answerPreview.slice(0, inner), DIM)}`);
+				}
+				lines.push("");
+			}
+			return lines;
+		}
+		// Level 1: Sessions list
+		lines.push(paint("Trajectories", AMBER, BOLD));
+		if (trajModal.sessions.length === 0) {
+			lines.push(paint("No saved sessions yet.", DIM));
+			return lines;
+		}
+		lines.push(paint("↑/↓ select · Enter expand · Esc close", DIM));
+		lines.push("");
+		for (let i = 0; i < trajModal.sessions.length; i++) {
+			const s = trajModal.sessions[i];
+			const active = i === trajModal.selected;
+			const marker = active ? paint("›", SAGE, BOLD) : paint(" ", DIM);
+			const dot = s.isCurrent ? paint("●", SAGE) : paint("·", DIM);
+			const label = active ? paint(s.id, STONE, BOLD) : paint(s.id, DIM);
+			const meta = paint(`${s.queries} quer${s.queries !== 1 ? "ies" : "y"} · ${s.model}`, DIM);
+			lines.push(`${marker} ${dot} ${label}  ${meta}`);
+		}
+		return lines;
+	}
+
+	lines.push(paint("RLM Trace", AMBER, BOLD));
+	const allQueries = [...traceHistory];
+	if (traceEntries.length > 0) {
+		allQueries.push({ query: "(current)", entries: traceEntries });
+	}
+	if (allQueries.length === 0) {
+		lines.push(paint("No iterations or sub-queries yet.", DIM));
+		return lines;
+	}
+	const traceModal = shellModal;
+	if (!traceModal || traceModal.kind !== "trace") return lines;
+
+	if (traceModal.queryExpanded) {
+		// Level 3: expanded detail for a single trace entry
+		const q = allQueries[Math.min(traceModal.selected, allQueries.length - 1)];
+		const entries = q?.entries || [];
+		const entryIdx = Math.min(traceModal.querySelected, entries.length - 1);
+		const entry = entries[entryIdx];
+		if (!entry) return lines;
+		lines.push(paint(`${entry.title}  ← Esc back · ↑/↓ scroll`, DIM));
+		lines.push("");
+		const detailHeight = Math.max(4, height - lines.length);
+		const fullDetail = buildTraceDetail(entry, Math.max(24, width - 2));
+		const maxScroll = Math.max(0, fullDetail.length - detailHeight);
+		if (traceModal.scroll > maxScroll) traceModal.scroll = maxScroll;
+		for (let j = 0; j < detailHeight; j++) {
+			lines.push(fullDetail[traceModal.scroll + j] ?? "");
+		}
+		return lines;
+	}
+
+	if (traceModal.expanded) {
+		// Level 2: trace entries for a specific query
+		const q = allQueries[Math.min(traceModal.selected, allQueries.length - 1)];
+		const entries = q?.entries || [];
+		lines.push(paint(`Query: ${q?.query || "unknown"}`, AMBER, BOLD));
+		if (entries.length === 0) {
+			lines.push(paint("No trace entries for this query.", DIM));
+			return lines;
+		}
+		lines.push(paint("↑/↓ select · Enter expand · Esc back", DIM));
+		lines.push("");
+		for (let idx = 0; idx < entries.length; idx++) {
+			const entry = entries[idx];
+			const active = idx === traceModal.querySelected;
+			const marker = active ? paint("›", SAGE, BOLD) : paint(" ", DIM);
+			const title = active ? paint(entry.title, STONE, BOLD) : paint(entry.title, DIM);
+			const status = entry.status === "completed" ? paint("✓", SAGE) : paint("…", STONE);
+			lines.push(`${marker} ${status} ${title}`);
+		}
+		return lines;
+	}
+
+	// Level 1: query list
+	lines.push(paint("↑/↓ select · Enter expand · Esc close", DIM));
+	lines.push("");
+	for (let idx = 0; idx < allQueries.length; idx++) {
+		const q = allQueries[idx];
+		const active = idx === traceModal.selected;
+		const marker = active ? paint("›", SAGE, BOLD) : paint(" ", DIM);
+		const label = active ? paint(q.query, STONE, BOLD) : paint(q.query, DIM);
+		const count = paint(`${q.entries.length} step${q.entries.length !== 1 ? "s" : ""}`, DIM);
+		lines.push(`${marker} ${label}  ${count}`);
+	}
+	return lines;
+}
+
+function renderShell(): void {
+	if (!shellActive || shellDestroyed) return;
+	const width = shellWidth();
+	const height = shellHeight();
+	const slashMenu = (!shellModal && shellInput.startsWith("/")) ? renderSlashMenu(width) : [];
+	const footerLines = [
+		...slashMenu,
+		buildStatusBar(statusItems(), width),
+		...renderComposer(width),
+	];
+	const transcriptHeight = Math.max(4, height - footerLines.length - 2);
+	const liveUpdates = !(isRunning && !shellModal && shellScroll > 0);
+	const bodyLines = shellModal ? renderModalView(width, transcriptHeight) : renderTranscript(width, liveUpdates);
+	const total = bodyLines.length;
+	// Modals handle their own internal scroll — skip global scroll for them
+	const activeScroll = shellModal ? 0 : shellScroll;
+	const start = Math.max(0, total - transcriptHeight - activeScroll);
+	const end = Math.max(start, Math.min(total, start + transcriptHeight));
+	const visible = bodyLines.slice(start, end);
+	const padded: string[] = [...visible];
+	while (padded.length < transcriptHeight) padded.push("");
+	const finalLines = [...padded, "", ...footerLines];
+	while (finalLines.length < height) finalLines.push("");
+	if (finalLines.length > height) finalLines.length = height;
+
+	const fullFrame = finalLines.map((line) => padAnsiRight(line, width));
+	const resetFrame =
+		previousFrameWidth !== width ||
+		previousFrameHeight !== height ||
+		previousFrame.length !== fullFrame.length;
+
+	const buf: string[] = [];
+	if (resetFrame) {
+		buf.push("\x1b[H\x1b[2J");
+		for (let i = 0; i < fullFrame.length; i++) {
+			buf.push(`\x1b[${i + 1};1H`);
+			buf.push(fullFrame[i]);
+			buf.push("\x1b[K");
+		}
+	} else {
+		for (let i = 0; i < fullFrame.length; i++) {
+			if (fullFrame[i] === previousFrame[i]) continue;
+			buf.push(`\x1b[${i + 1};1H`);
+			buf.push(fullFrame[i]);
+			buf.push("\x1b[K");
+		}
+	}
+	buf.push(`\x1b[${height};${Math.max(1, width)}H`);
+	previousFrame = fullFrame;
+	previousFrameWidth = width;
+	previousFrameHeight = height;
+	stdout.write(buf.join(""));
+}
+
+function insertInput(text: string): void {
+	shellInput = shellInput.slice(0, shellCursor) + text + shellInput.slice(shellCursor);
+	shellCursor += text.length;
+	requestRender();
+}
+
+function deleteBackward(): void {
+	if (shellCursor === 0) return;
+	shellInput = shellInput.slice(0, shellCursor - 1) + shellInput.slice(shellCursor);
+	shellCursor--;
+	requestRender();
+}
+
+function saveTrajectory(query: string, effectiveContext: string, trajectory: any): void {
+	try {
+		if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
+		const trajFile = `query-${String(queryCount).padStart(3, "0")}.json`;
+		fs.writeFileSync(path.join(SESSION_DIR, trajFile), JSON.stringify({
+			...trajectory,
+			model: currentModelId,
+			query,
+			contextLength: effectiveContext.length,
+			contextLines: effectiveContext.split("\n").length,
+		}, null, 2), "utf-8");
+	} catch {}
+}
 
 async function runQuery(query: string): Promise<void> {
 	const effectiveContext = contextText || query;
-
 	if (!currentModel) {
 		const resolved = resolveModelWithProvider(currentModelId);
 		if (resolved) {
@@ -1212,58 +2270,44 @@ async function runQuery(query: string): Promise<void> {
 			currentProviderName = resolved.provider;
 		}
 	}
-	// Safety: verify the current provider still has an API key — re-resolve if not
-	if (currentModel && currentProviderName) {
-		const key = providerEnvKey(currentProviderName);
-		if (!process.env[key]) {
-			const resolved = resolveModelWithProvider(currentModelId);
-			if (resolved && process.env[providerEnvKey(resolved.provider)]) {
-				currentModel = resolved.model;
-				currentProviderName = resolved.provider;
-			}
-		}
-	}
 	if (!currentModel) {
-		console.log(`\n  ${c.red}Model "${currentModelId}" not found.${c.reset}`);
-		console.log(`  ${c.dim}Check RLM_MODEL in your .env file.${c.reset}\n`);
+		appendTranscript({ kind: "event", tone: "error", text: `Model "${currentModelId}" not found.` });
+		requestRender();
 		return;
 	}
 
 	isRunning = true;
 	queryCount++;
+	shellScroll = 0;
+	appendTranscript({ kind: "user", text: query });
+	// Save previous trace to history before clearing
+	if (traceEntries.length > 0) {
+		const prevQuery = transcript.filter(t => t.kind === "user");
+		const label = prevQuery.length >= 2 ? prevQuery[prevQuery.length - 2].text.slice(0, 60) : "query";
+		traceHistory.push({ query: label, entries: traceEntries });
+	}
+	traceEntries = [];
+	traceMessage = "";
+	activeRunStatus = "reasoning";
+	activeRunStartedAt = Date.now();
+	startLiveRenderTicker();
+	requestRender();
+
 	const startTime = Date.now();
-	const spinner = new Spinner();
-
-	// ── RLM mode ─────────────────────────────────────────────────────────
-	let subQueryCount = 0;
-	console.log(`\n  ${c.dim}${currentModelId} · ${(effectiveContext.length / 1024).toFixed(1)}KB context${c.reset}`);
-
-	// Trajectory bookkeeping
 	const trajectory: any = {
-		model: currentModelId,
-		query,
-		contextLength: effectiveContext.length,
-		contextLines: effectiveContext.split("\n").length,
 		startTime: new Date().toISOString(),
 		iterations: [],
 		result: null,
 		totalElapsedMs: 0,
 	};
-
-	let currentStep: any = null;
-	let iterStart = Date.now();
-
+	let currentIteration: IterationTrace | null = null;
 	const repl = new PythonRepl();
 	const ac = new AbortController();
-
-	// Expose to the readline SIGINT handler
 	activeAc = ac;
 	activeRepl = repl;
-	activeSpinner = spinner;
 
 	try {
 		await repl.start(ac.signal);
-
 		const result = await runRlmLoop({
 			context: effectiveContext,
 			query,
@@ -1273,112 +2317,79 @@ async function runQuery(query: string): Promise<void> {
 			signal: ac.signal,
 			onProgress: (info: RlmProgress) => {
 				if (info.phase === "generating_code") {
-					iterStart = Date.now();
-					currentStep = {
+					currentIteration = {
+						kind: "iteration",
+						title: `Iteration ${info.iteration}`,
+						status: "reasoning",
+						startedAt: Date.now(),
 						iteration: info.iteration,
-						code: null,
+						userMessage: info.userMessage || "",
+						systemPrompt: info.systemPrompt || "",
+						code: "",
+						rawResponse: "",
 						stdout: "",
 						stderr: "",
-						subQueries: [],
-						hasFinal: false,
 						elapsedMs: 0,
-						userMessage: info.userMessage || "",
-						rawResponse: "",
-						systemPrompt: info.systemPrompt,
 					};
-
-					const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-					console.log(`\n  ${paint(`◆ Iteration ${info.iteration}`, AMBER, BOLD)}  ${paint(`${elapsed}s elapsed`, DIM)}`);
-					stepRule();
-					spinner.start("reasoning\u2026");
+					traceEntries.push(currentIteration);
+					activeRunStatus = `iteration ${info.iteration} · reasoning`;
+					requestBackgroundRender();
 				}
-
-				if (info.phase === "executing" && info.code) {
-					spinner.stop();
-
-					if (currentStep) {
-						currentStep.code = info.code;
-						currentStep.rawResponse = info.rawResponse || "";
-					}
-
-					displayCode(info.code);
-					spinner.start("executing\u2026");
+				if (info.phase === "executing" && currentIteration) {
+					currentIteration.code = info.code || "";
+					currentIteration.rawResponse = info.rawResponse || "";
+					currentIteration.status = "executing";
+					activeRunStatus = `iteration ${info.iteration} · executing`;
+					requestBackgroundRender();
 				}
-
-				if (info.phase === "checking_final") {
-					spinner.stop();
-
-					if (currentStep) {
-						currentStep.stdout = info.stdout || "";
-						currentStep.stderr = info.stderr || "";
-						currentStep.elapsedMs = Date.now() - iterStart;
-						trajectory.iterations.push({ ...currentStep });
-					}
-
-					if (info.stdout) {
-						displayOutput(info.stdout);
-					}
-
-					if (info.stderr) {
-						displayError(info.stderr);
-					}
-
-					const iterElapsed = ((Date.now() - iterStart) / 1000).toFixed(1);
-					const sqLabel = info.subQueries > 0 ? `  ·  ${info.subQueries} sub-quer${info.subQueries !== 1 ? "ies" : "y"}` : "";
-					console.log(`\n    ${paint(`✓ ${iterElapsed}s${sqLabel}`, DIM)}`);
+				if (info.phase === "checking_final" && currentIteration) {
+					currentIteration.stdout = info.stdout || "";
+					currentIteration.stderr = info.stderr || "";
+					currentIteration.elapsedMs = Date.now() - currentIteration.startedAt;
+					currentIteration.status = "completed";
+					trajectory.iterations.push({ ...currentIteration });
+					activeRunStatus = `iteration ${info.iteration} · finalizing`;
+					requestBackgroundRender();
 				}
 			},
 			onSubQueryStart: (info: SubQueryStartInfo) => {
-				spinner.stop();
-				displaySubQueryStart(info);
-				spinner.start("querying\u2026");
+				traceEntries.push({
+					kind: "subquery",
+					title: `Sub-query ${info.index}`,
+					status: "running",
+					startedAt: Date.now(),
+					index: info.index,
+					contextLength: info.contextLength,
+					instruction: info.instruction,
+					result: "",
+					elapsedMs: 0,
+				});
+				activeRunStatus = `sub-query ${info.index}`;
+				traceMessage = `sub-query ${info.index}`;
+				requestBackgroundRender();
 			},
 			onSubQuery: (info: SubQueryInfo) => {
-				subQueryCount++;
-				if (currentStep) {
-					currentStep.subQueries.push(info);
+				const item = traceEntries.find((entry): entry is SubqueryTrace => entry.kind === "subquery" && entry.index === info.index);
+				if (item) {
+					item.result = info.resultPreview;
+					item.elapsedMs = info.elapsedMs;
+					item.status = "completed";
 				}
-
-				spinner.stop();
-				displaySubQueryResult(info);
-				spinner.start("executing\u2026");
+				activeRunStatus = `sub-query ${info.index} finished`;
+				requestBackgroundRender();
 			},
 		});
 
 		trajectory.result = result;
 		trajectory.totalElapsedMs = Date.now() - startTime;
-
-		if (result.completed && trajectory.iterations.length > 0) {
-			trajectory.iterations[trajectory.iterations.length - 1].hasFinal = true;
-		}
-
-		// Final answer
-		const totalSec = ((Date.now() - startTime) / 1000).toFixed(1);
-		const stats = `${result.iterations} step${result.iterations !== 1 ? "s" : ""}  ·  ${result.totalSubQueries} sub-quer${result.totalSubQueries !== 1 ? "ies" : "y"}  ·  ${totalSec}s`;
-
-		const answerLines = result.answer.split("\n");
-		console.log();
-		console.log(boxTop(`${paint("✓ Result", SAGE, BOLD)}  ${paint(stats, DIM)}`, c.green));
-		for (const line of answerLines) {
-			for (const chunk of wrapText(line, MAX_CONTENT_W)) {
-				console.log(boxLine(chunk, c.green));
-			}
-		}
-		console.log(boxBottom(c.green));
-		console.log();
-
-		// Save trajectory silently to session directory
-		try {
-			if (!fs.existsSync(SESSION_DIR)) fs.mkdirSync(SESSION_DIR, { recursive: true });
-			const trajFile = `query-${String(queryCount).padStart(3, "0")}.json`;
-			fs.writeFileSync(path.join(SESSION_DIR, trajFile), JSON.stringify(trajectory, null, 2), "utf-8");
-		} catch {
-			// Silently swallow trajectory save errors — never surface to user
-		}
+		saveTrajectory(query, effectiveContext, trajectory);
+		appendTranscript({
+			kind: "stats",
+			text: `${result.iterations} step${result.iterations !== 1 ? "s" : ""} · ${result.totalSubQueries} sub-quer${result.totalSubQueries !== 1 ? "ies" : "y"} · ${((Date.now() - startTime) / 1000).toFixed(1)}s`,
+		});
+		appendTranscript({ kind: "assistant", text: result.answer });
 	} catch (err: any) {
-		spinner.stop();
 		const msg = err?.message || String(err);
-		// Suppress expected abort/shutdown errors
 		if (
 			err?.name !== "AbortError" &&
 			!msg.includes("Aborted") &&
@@ -1386,116 +2397,532 @@ async function runQuery(query: string): Promise<void> {
 			!msg.includes("REPL subprocess") &&
 			!msg.includes("REPL shut down")
 		) {
-			showErrorMsg(msg);
+			appendTranscript({ kind: "event", tone: "error", text: msg });
 		}
 	} finally {
-		spinner.stop();
+		activeRunStatus = "";
+		activeRunStartedAt = 0;
 		activeAc = null;
 		activeRepl = null;
-		activeSpinner = null;
-		try { repl.shutdown(); } catch { /* already dead */ }
+		try { repl.shutdown(); } catch {}
 		isRunning = false;
+		stopLiveRenderTicker();
+		requestRender();
+		void processQueuedSubmission();
 	}
 }
 
-// ── @file shorthand and auto-detect file paths ─────────────────────────────
+function queueSubmission(query: string): void {
+	queuedSubmissions.push(query);
+	appendTranscript({ kind: "queued", text: query });
+	requestRender();
+}
 
+async function processQueuedSubmission(): Promise<void> {
+	if (isRunning) return;
+	const next = queuedSubmissions.shift();
+	if (!next) return;
+	await runQuery(next);
+}
 
 function expandAtFiles(input: string): string {
-	// Extract all @tokens from input
 	const tokens: string[] = [];
 	const remaining: string[] = [];
-
 	for (const part of input.split(/\s+/)) {
-		if (part.startsWith("@") && part.length > 1) {
-			tokens.push(expandTilde(part.slice(1)));
-		} else {
-			remaining.push(part);
-		}
+		if (part.startsWith("@") && part.length > 1) tokens.push(expandTilde(part.slice(1)));
+		else remaining.push(part);
 	}
-
 	if (tokens.length === 0) return input;
-
 	const filePaths = resolveFileArgs(tokens);
 	if (filePaths.length === 0) {
-		console.log(`  ${c.red}No files found for: ${tokens.join(", ")}${c.reset}`);
+		appendTranscript({ kind: "event", tone: "error", text: `No files found for: ${tokens.join(", ")}` });
 		return "";
 	}
-
 	if (filePaths.length === 1) {
-		// Single file — simple load
-		try {
-			contextText = fs.readFileSync(filePaths[0], "utf-8");
-			contextSource = path.relative(process.cwd(), filePaths[0]) || filePaths[0];
-			const lines = contextText.split("\n").length;
-			console.log(
-				`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines} lines) from ${c.underline}${contextSource}${c.reset}`
-			);
-		} catch (err: any) {
-			console.log(`  ${c.red}Could not read file: ${err.message}${c.reset}`);
-			return "";
-		}
+		contextText = fs.readFileSync(filePaths[0], "utf-8");
+		contextSource = path.relative(process.cwd(), filePaths[0]) || filePaths[0];
+		contextIsDefault = false;
+		appendTranscript({ kind: "event", tone: "success", text: `Loaded ${contextText.length.toLocaleString()} chars from ${contextSource}` });
 	} else {
-		// Multiple files — concatenate with separators
 		const { text, count, totalBytes } = loadMultipleFiles(filePaths);
 		contextText = text;
 		contextSource = `${count} files`;
-		console.log(
-			`  ${c.green}✓${c.reset} Loaded ${c.bold}${count}${c.reset} files (${(totalBytes / 1024).toFixed(1)}KB total)`
-		);
+		contextIsDefault = false;
+		appendTranscript({ kind: "event", tone: "success", text: `Loaded ${count} files (${(totalBytes / 1024).toFixed(1)}KB)` });
 	}
-
 	return remaining.join(" ");
 }
 
-// ── Auto-detect URLs ────────────────────────────────────────────────────────
-
 async function detectAndLoadUrl(input: string): Promise<boolean> {
 	const urlMatch = input.match(/^https?:\/\/\S+$/);
-	if (urlMatch) {
-		const url = urlMatch[0];
-		console.log(`  ${c.dim}Fetching ${url}...${c.reset}`);
-		try {
-			contextText = await safeFetch(url);
-			contextSource = url;
-			const lines = contextText.split("\n").length;
-			console.log(
-				`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines} lines)`
-			);
-			return true;
-		} catch (err: any) {
-			console.log(`  ${c.red}Failed: ${err.message}${c.reset}`);
-			return false;
-		}
+	if (!urlMatch) return false;
+	const url = urlMatch[0];
+	try {
+		contextText = await safeFetch(url);
+		contextSource = url;
+		contextIsDefault = false;
+		appendTranscript({ kind: "event", tone: "success", text: `Loaded ${(contextText.length / 1024).toFixed(1)}KB from ${url}` });
+		return true;
+	} catch (err: any) {
+		appendTranscript({ kind: "event", tone: "error", text: `Failed to fetch ${url}: ${err.message}` });
+		return false;
 	}
-	return false;
 }
 
-// ── Main interactive loop ───────────────────────────────────────────────────
+async function switchModelById(modelId: string): Promise<void> {
+	const resolved = resolveModelWithProvider(modelId);
+	if (!resolved) {
+		appendTranscript({ kind: "event", tone: "error", text: `Model "${modelId}" not found.` });
+		return;
+	}
+	currentModelId = modelId;
+	currentModel = resolved.model;
+	currentProviderName = resolved.provider;
+	saveModelPreference(currentModelId);
+	appendTranscript({ kind: "event", tone: "success", text: `Switched to ${currentModelId}` });
+}
+
+async function switchProvider(providerId: string): Promise<void> {
+	if (providerId === "ollama") {
+		const first = [...ollamaModelMap.keys()].find((key) => key.startsWith("ollama:"))?.slice("ollama:".length);
+		if (!first) {
+			appendTranscript({ kind: "event", tone: "error", text: "No Ollama models available." });
+			return;
+		}
+		await switchModelById(first);
+		return;
+	}
+	const defaultModel = getDefaultModelForProvider(providerId);
+	if (!defaultModel) {
+		appendTranscript({ kind: "event", tone: "error", text: `No models available for ${providerId}.` });
+		return;
+	}
+	await switchModelById(defaultModel);
+}
+
+async function handleSlashCommand(line: string): Promise<void> {
+	const [cmd, ...rest] = line.slice(1).split(/\s+/);
+	const arg = rest.join(" ").trim();
+	switch (cmd) {
+		case "help":
+		case "h":
+			openHelpModal();
+			return;
+		case "model":
+		case "m":
+			if (arg) await switchModelById(arg);
+			else openModelModal();
+			return;
+		case "provider":
+		case "prov":
+			openProviderModal();
+			return;
+		case "trace":
+			openTraceModal();
+			return;
+		case "file":
+		case "f": {
+			if (!arg) {
+				appendTranscript({ kind: "event", tone: "error", text: "Usage: /file <path> [query]" });
+				return;
+			}
+			const tokens = arg.split(/\s+/).filter(Boolean);
+			const pathTokens: string[] = [];
+			const queryTokens: string[] = [];
+			let pastPaths = false;
+			for (const token of tokens) {
+				if (!pastPaths && looksLikePath(token)) pathTokens.push(token);
+				else {
+					pastPaths = true;
+					queryTokens.push(token);
+				}
+			}
+			const filePaths = resolveFileArgs(pathTokens);
+			if (filePaths.length === 0) {
+				appendTranscript({ kind: "event", tone: "error", text: "No files found." });
+				return;
+			}
+			if (filePaths.length === 1) {
+				contextText = fs.readFileSync(filePaths[0], "utf-8");
+				contextSource = path.relative(process.cwd(), filePaths[0]) || filePaths[0];
+				contextIsDefault = false;
+				appendTranscript({ kind: "event", tone: "success", text: `Loaded ${contextText.length.toLocaleString()} chars from ${contextSource}` });
+			} else {
+				const loaded = loadMultipleFiles(filePaths);
+				contextText = loaded.text;
+				contextSource = `${loaded.count} files`;
+				contextIsDefault = false;
+				appendTranscript({ kind: "event", tone: "success", text: `Loaded ${loaded.count} files (${(loaded.totalBytes / 1024).toFixed(1)}KB)` });
+			}
+			const fileQuery = queryTokens.join(" ").trim();
+			if (fileQuery) {
+				if (isRunning) queueSubmission(fileQuery);
+				else await runQuery(fileQuery);
+			}
+			return;
+		}
+		case "url":
+		case "u":
+			if (!arg) {
+				appendTranscript({ kind: "event", tone: "error", text: "Usage: /url <url>" });
+				return;
+			}
+			await detectAndLoadUrl(arg);
+			return;
+		case "clear":
+			transcript = [];
+			introVisible = true;
+			transcriptRevision++;
+			transcriptChunkCacheWidth = 0;
+			transcriptStaticRowsCache = [];
+			transcriptChunkRowsCache = [];
+			requestRender();
+			return;
+		case "trajectories":
+		case "traj":
+			openTrajectoriesModal();
+			return;
+		case "quit":
+		case "q":
+		case "exit":
+			cleanupShell();
+			process.exit(0);
+			return;
+		default:
+			appendTranscript({ kind: "event", tone: "error", text: `Unknown command: /${cmd}` });
+	}
+}
+
+async function submitCurrentInput(): Promise<void> {
+	const raw = shellInput.trim();
+	if (!raw) return;
+	shellInput = "";
+	shellCursor = 0;
+	requestRender();
+
+	if (raw.startsWith("/")) {
+		await handleSlashCommand(raw);
+		return;
+	}
+	if (await detectAndLoadUrl(raw)) return;
+
+	let query = expandAtFiles(raw);
+	if (!query && raw.startsWith("@")) return;
+	if (!query) query = raw;
+
+	if (isRunning) {
+		queueSubmission(query);
+		return;
+	}
+	await runQuery(query);
+}
+
+async function handleShellKey(str: string, key: readline.Key): Promise<void> {
+	// Ctrl+C always works — even inside modals
+	if (key.ctrl && key.name === "c") {
+		if (shellModal) { closeModal(); return; }
+		if (isRunning && activeAc) {
+			activeAc.abort();
+			try { activeRepl?.shutdown(); } catch {}
+			appendTranscript({ kind: "event", tone: "error", text: "Stopped" });
+			requestRender();
+			return;
+		}
+		cleanupShell();
+		process.exit(0);
+	}
+
+	if (shellModal) {
+		if (key.name === "escape" || (key.ctrl && key.name === "o")) {
+			// In expanded view, Esc goes back one level instead of closing
+			if (shellModal.kind === "trace") {
+				if (shellModal.queryExpanded) {
+					shellModal.queryExpanded = false;
+					shellModal.scroll = 0;
+					requestRender();
+					return;
+				}
+				if (shellModal.expanded) {
+					shellModal.expanded = false;
+					shellModal.scroll = 0;
+					shellModal.querySelected = 0;
+					requestRender();
+					return;
+				}
+			}
+			if (shellModal.kind === "trajectories") {
+				if (shellModal.queryExpanded) {
+					// Level 3 → Level 2
+					shellModal.queryExpanded = false;
+					shellModal.scroll = 0;
+					requestRender();
+					return;
+				}
+				if (shellModal.expanded) {
+					// Level 2 → Level 1
+					shellModal.expanded = false;
+					shellModal.scroll = 0;
+					shellModal.querySelected = 0;
+					requestRender();
+					return;
+				}
+			}
+			closeModal();
+			return;
+		}
+		if (shellModal.kind === "model") {
+			if (key.name === "up") shellModal.selected = Math.max(0, shellModal.selected - 1);
+			if (key.name === "down") shellModal.selected = Math.min(shellModal.items.length - 1, shellModal.selected + 1);
+			if (key.name === "return") {
+				const item = shellModal.items[shellModal.selected];
+				closeModal();
+				await switchModelById(item.id);
+			}
+			requestRender();
+			return;
+		}
+		if (shellModal.kind === "provider") {
+			if (key.name === "up") shellModal.selected = Math.max(0, shellModal.selected - 1);
+			if (key.name === "down") shellModal.selected = Math.min(shellModal.items.length - 1, shellModal.selected + 1);
+			if (key.name === "return") {
+				const item = shellModal.items[shellModal.selected];
+				closeModal();
+				await switchProvider(item.id);
+			}
+			requestRender();
+			return;
+		}
+		if (shellModal.kind === "trajectories") {
+			if (shellModal.queryExpanded) {
+				// Level 3: scrolling full answer
+				const lineStep = lineScrollStep();
+				if (key.name === "up") shellModal.scroll = Math.max(0, shellModal.scroll - lineStep);
+				if (key.name === "down") shellModal.scroll += lineStep;
+				const step = Math.max(4, Math.floor(shellHeight() / 3));
+				if (key.name === "pageup") shellModal.scroll = Math.max(0, shellModal.scroll - step);
+				if (key.name === "pagedown") shellModal.scroll += step;
+				renderNow();
+				return;
+			}
+			if (shellModal.expanded) {
+				// Level 2: queries list — ↑/↓ selects, Enter expands
+				if (key.name === "up") shellModal.querySelected = Math.max(0, shellModal.querySelected - 1);
+				if (key.name === "down") shellModal.querySelected = Math.min(shellModal.queries.length - 1, shellModal.querySelected + 1);
+				if (key.name === "return" && shellModal.queries.length > 0) {
+					shellModal.queryExpanded = true;
+					shellModal.scroll = 0;
+				}
+				renderNow();
+				return;
+			}
+			// Level 1: sessions list — ↑/↓ selects, Enter expands into session
+			if (key.name === "up") shellModal.selected = Math.max(0, shellModal.selected - 1);
+			if (key.name === "down") shellModal.selected = Math.min(shellModal.sessions.length - 1, shellModal.selected + 1);
+			if (key.name === "return" && shellModal.sessions.length > 0) {
+				const session = shellModal.sessions[Math.min(shellModal.selected, shellModal.sessions.length - 1)];
+				shellModal.queries = loadSessionQueries(session.id);
+				shellModal.expanded = true;
+				shellModal.querySelected = 0;
+				shellModal.scroll = 0;
+			}
+			renderNow();
+			return;
+		}
+		if (shellModal.kind === "trace") {
+			const allQueries = [...traceHistory];
+			if (traceEntries.length > 0) allQueries.push({ query: "(current)", entries: traceEntries });
+			if (shellModal.queryExpanded) {
+				// Level 3: scrolling trace detail
+				const lineStep = lineScrollStep();
+				if (key.name === "up") shellModal.scroll = Math.max(0, shellModal.scroll - lineStep);
+				if (key.name === "down") shellModal.scroll += lineStep;
+				const step = Math.max(4, Math.floor(shellHeight() / 3));
+				if (key.name === "pageup") shellModal.scroll = Math.max(0, shellModal.scroll - step);
+				if (key.name === "pagedown") shellModal.scroll += step;
+				renderNow();
+				return;
+			}
+			if (shellModal.expanded) {
+				// Level 2: trace entries for a query — ↑/↓ selects, Enter expands
+				const q = allQueries[Math.min(shellModal.selected, allQueries.length - 1)];
+				const entries = q?.entries || [];
+				if (key.name === "up") shellModal.querySelected = Math.max(0, shellModal.querySelected - 1);
+				if (key.name === "down") shellModal.querySelected = Math.min(entries.length - 1, shellModal.querySelected + 1);
+				if (key.name === "return" && entries.length > 0) {
+					shellModal.queryExpanded = true;
+					shellModal.scroll = 0;
+				}
+				renderNow();
+				return;
+			}
+			// Level 1: query list — ↑/↓ selects, Enter expands
+			if (key.name === "up") shellModal.selected = Math.max(0, shellModal.selected - 1);
+			if (key.name === "down") shellModal.selected = Math.min(allQueries.length - 1, shellModal.selected + 1);
+			if (key.name === "return" && allQueries.length > 0) {
+				shellModal.expanded = true;
+				shellModal.querySelected = 0;
+				shellModal.scroll = 0;
+			}
+			renderNow();
+			return;
+		}
+		if (shellModal.kind === "help") {
+			if (key.name === "pageup") shellModal.scroll += Math.max(4, Math.floor(shellHeight() / 3));
+			if (key.name === "pagedown") shellModal.scroll = Math.max(0, shellModal.scroll - Math.max(4, Math.floor(shellHeight() / 3)));
+			renderNow();
+			return;
+		}
+	}
+
+	if (key.ctrl && key.name === "o") {
+		openTraceModal();
+		return;
+	}
+
+	if (key.name === "pageup") {
+		shellScroll += Math.max(4, Math.floor(shellHeight() / 2));
+		requestRender();
+		return;
+	}
+	if (key.name === "pagedown") {
+		shellScroll = Math.max(0, shellScroll - Math.max(4, Math.floor(shellHeight() / 2)));
+		requestRender();
+		return;
+	}
+	// Slash menu navigation when / is typed
+	if (shellInput.startsWith("/") && getSlashMatches().length > 0) {
+		const matches = getSlashMatches();
+		if (key.name === "escape") {
+			shellInput = "";
+			shellCursor = 0;
+			slashMenuIndex = 0;
+			requestRender();
+			return;
+		}
+		if (key.name === "up") {
+			slashMenuIndex = Math.max(0, slashMenuIndex - 1);
+			requestRender();
+			return;
+		}
+		if (key.name === "down") {
+			slashMenuIndex = Math.min(matches.length - 1, slashMenuIndex + 1);
+			requestRender();
+			return;
+		}
+		if (key.name === "return" || key.name === "tab") {
+			const selected = matches[Math.min(slashMenuIndex, matches.length - 1)];
+			if (selected.needsArg) {
+				// Needs argument — fill into composer
+				shellInput = `${selected.cmd} `;
+				shellCursor = shellInput.length;
+				slashMenuIndex = 0;
+				requestRender();
+				return;
+			}
+			// No argument needed — execute directly
+			shellInput = selected.cmd;
+			shellCursor = shellInput.length;
+			slashMenuIndex = 0;
+			await submitCurrentInput();
+			return;
+		}
+	}
+	if (key.name === "up" && shellInput.length === 0) {
+		shellScroll += lineScrollStep();
+		requestRender();
+		return;
+	}
+	if (key.name === "down" && shellInput.length === 0) {
+		shellScroll = Math.max(0, shellScroll - lineScrollStep());
+		requestRender();
+		return;
+	}
+	if (key.name === "left") {
+		shellCursor = Math.max(0, shellCursor - 1);
+		requestRender();
+		return;
+	}
+	if (key.name === "right") {
+		shellCursor = Math.min(shellInput.length, shellCursor + 1);
+		requestRender();
+		return;
+	}
+	if (key.name === "home") {
+		shellCursor = 0;
+		requestRender();
+		return;
+	}
+	if (key.name === "end") {
+		shellCursor = shellInput.length;
+		requestRender();
+		return;
+	}
+	if (key.name === "backspace") {
+		deleteBackward();
+		slashMenuIndex = 0;
+		return;
+	}
+	if (key.name === "delete") {
+		if (shellCursor < shellInput.length) {
+			shellInput = shellInput.slice(0, shellCursor) + shellInput.slice(shellCursor + 1);
+			requestRender();
+		}
+		return;
+	}
+	if (key.name === "return") {
+		await submitCurrentInput();
+		return;
+	}
+	if (!key.ctrl && !key.meta && str) {
+		insertInput(str);
+		slashMenuIndex = 0;
+	}
+}
+
+async function startShell(): Promise<void> {
+	shellActive = true;
+	shellDestroyed = false;
+	readline.emitKeypressEvents(stdin);
+	if (stdin.isTTY) stdin.setRawMode(true);
+	stdout.write("\x1b[?1049h\x1b[?25l");
+	stdin.resume();
+	process.stdout.on("resize", requestRender);
+
+	// Fast-path Escape: bypass readline's ESCDELAY (~200-500ms).
+	// In local terminals, bare \x1b always arrives as a single byte.
+	let _fastEscHandled = false;
+	stdin.on("data", (data: Buffer) => {
+		if (data.length === 1 && data[0] === 0x1b) {
+			_fastEscHandled = true;
+			void handleShellKey("\x1b", { name: "escape", sequence: "\x1b" } as readline.Key);
+		}
+	});
+	stdin.on("keypress", (str, key) => {
+		if (key.name === "escape" && _fastEscHandled) {
+			_fastEscHandled = false;
+			return; // already handled by fast path
+		}
+		void handleShellKey(str, key as readline.Key);
+	});
+	requestRender();
+}
 
 async function interactive(): Promise<void> {
-	// Load Ollama models in the background — non-blocking
-	loadOllamaModels().catch(() => {});
+	await loadOllamaModels().catch(() => {});
 
-	// Validate env
 	if (!hasAnyApiKey()) {
 		printBanner();
 		console.log(`  ${c.bold}Welcome! Let's get you set up.${c.reset}\n`);
-
 		const setupRl = readline.createInterface({ input: stdin, output: stdout, terminal: true });
 		let setupDone = false;
-
 		while (!setupDone) {
 			console.log(`  ${c.bold}Select your provider:${c.reset}\n`);
 			for (let i = 0; i < SETUP_PROVIDERS.length; i++) {
 				console.log(`  ${c.dim}${i + 1}${c.reset}  ${SETUP_PROVIDERS[i].name} ${c.dim}(${SETUP_PROVIDERS[i].label})${c.reset}`);
 			}
 			console.log();
-
 			const choice = await questionWithEsc(setupRl, `  ${c.cyan}Provider [1-${SETUP_PROVIDERS.length}]:${c.reset} `);
 			if (choice === null) {
-				// ESC at provider selection → exit
-				console.log(`\n  ${c.dim}Exiting.${c.reset}\n`);
 				setupRl.close();
 				process.exit(0);
 			}
@@ -1504,525 +2931,52 @@ async function interactive(): Promise<void> {
 				console.log(`\n  ${c.dim}Invalid choice.${c.reset}\n`);
 				continue;
 			}
-
 			const provider = SETUP_PROVIDERS[idx];
 			const gotKey = await promptForProviderKey(setupRl, provider);
-			if (gotKey === null) {
-				// ESC at key entry → back to provider selection
-				console.log();
-				continue;
-			}
+			if (gotKey === null) continue;
 			if (!gotKey) {
-				console.log(`\n  ${c.dim}No key provided. Exiting.${c.reset}\n`);
 				setupRl.close();
 				process.exit(0);
 			}
-
-			// Auto-select default model for chosen provider
 			currentProviderName = provider.piProvider;
 			const defaultModel = getDefaultModelForProvider(provider.piProvider);
 			if (defaultModel) {
 				currentModelId = defaultModel;
 				saveModelPreference(currentModelId);
-				console.log(`  ${c.green}✓${c.reset} Default model: ${c.bold}${currentModelId}${c.reset}`);
 			}
-			console.log();
 			setupDone = true;
 		}
 		setupRl.close();
-		// Ensure stdin is resumed after closing the setup readline — some
-		// platforms/terminals pause stdin on close, preventing the main REPL
-		// readline from receiving input.
 		if (stdin.isPaused()) stdin.resume();
 	}
 
-	// Resolve model — ensure the resolved provider actually has an API key
-	// (Ollama models don't need a key — always accept them)
 	const initialResolved = resolveModelWithProvider(currentModelId);
 	if (initialResolved) {
-		const isOllamaProvider = initialResolved.provider === "ollama";
-		const resolvedKey = providerEnvKey(initialResolved.provider);
-		if (isOllamaProvider || process.env[resolvedKey]) {
-			currentModel = initialResolved.model;
-			currentProviderName = initialResolved.provider;
-		}
+		currentModel = initialResolved.model;
+		currentProviderName = initialResolved.provider;
 	}
-
-	// If default model's provider has no key, fall back to a provider that does
 	if (!currentModel) {
 		const activeProvider = detectProvider();
-		if (activeProvider !== "unknown") {
-			const fallbackModel = getDefaultModelForProvider(activeProvider);
-			if (fallbackModel) {
-				const fallbackResolved = resolveModelWithProvider(fallbackModel);
-				if (fallbackResolved) {
-					currentModelId = fallbackModel;
-					currentModel = fallbackResolved.model;
-					currentProviderName = fallbackResolved.provider;
-					const label = findSetupProvider(activeProvider)?.name || activeProvider;
-					console.log(`  ${c.dim}Using ${label} (${currentModelId})${c.reset}`);
-				}
-			}
+		const fallbackModel = getDefaultModelForProvider(activeProvider);
+		if (fallbackModel) {
+			const resolved = resolveModelWithProvider(fallbackModel);
+			currentModelId = fallbackModel;
+			currentModel = resolved?.model;
+			currentProviderName = resolved?.provider || activeProvider;
 		}
 	}
-
 	if (!currentModel) {
-		console.log(`\n  ${c.red}Model "${currentModelId}" not found.${c.reset}`);
-		console.log(`  Check ${c.bold}RLM_MODEL${c.reset} in your .env file.\n`);
+		console.log(`\n  ${c.red}Model "${currentModelId}" not found.${c.reset}\n`);
 		process.exit(1);
 	}
 
-	// Auto-load cwd context so the LLM knows the project structure
 	contextText = buildCwdContext();
 	contextSource = path.basename(process.cwd());
-
-	printWelcome();
-
-	const rl = readline.createInterface({
-		input: stdin,
-		output: stdout,
-		prompt: `${c.cyan}❯${c.reset} `,
-		terminal: true,
-	});
-
-	// Color slash commands cyan as the user types
-	const rlAny = rl as any;
-	const promptStr = rl.getPrompt();
-	rlAny._writeToOutput = function (str: string) {
-		if (!rlAny.line?.startsWith("/")) {
-			rlAny.output.write(str);
-			return;
-		}
-		if (str.startsWith(promptStr)) {
-			rlAny.output.write(promptStr + c.cyan + str.slice(promptStr.length) + c.reset);
-		} else {
-			rlAny.output.write(c.cyan + str + c.reset);
-		}
-	};
-
-	rl.prompt();
-
-	rl.on("line", async (rawLine: string) => {
-	  try {
-		if (isRunning) return; // ignore input while a query is active
-		const line = rawLine.trim();
-
-		// URL auto-detect
-		if (line.startsWith("http://") || line.startsWith("https://")) {
-			const loaded = await detectAndLoadUrl(line);
-			if (loaded) {
-				printStatusLine();
-				console.log(`\n  ${c.dim}Now type your query...${c.reset}\n`);
-				rl.prompt();
-				return;
-			}
-		}
-
-		// Multi-line paste detect
-		if (isMultiLineInput(rawLine)) {
-			const result = handleMultiLineAsContext(rawLine);
-			if (result) {
-				contextText = result.context;
-				contextSource = "(pasted)";
-				printStatusLine();
-				console.log(`\n  ${c.dim}Now type your query...${c.reset}\n`);
-				rl.prompt();
-				return;
-			}
-		}
-
-		if (!line) {
-			rl.prompt();
-			return;
-		}
-
-		// Slash commands
-		if (line.startsWith("/")) {
-			const [cmd, ...rest] = line.slice(1).split(/\s+/);
-			const arg = rest.join(" ");
-
-			switch (cmd) {
-				case "help":
-				case "h":
-					printCommandHelp();
-					break;
-				case "file":
-				case "f": {
-					const fileQuery = await handleFile(arg);
-					if (fileQuery && contextText) {
-						await runQuery(fileQuery);
-						printStatusLine();
-					}
-					break;
-				}
-				case "url":
-				case "u":
-					await handleUrl(arg);
-					break;
-				case "paste":
-				case "p":
-					await handlePaste(rl);
-					break;
-				case "context":
-				case "ctx":
-					handleContext();
-					break;
-				case "clear-context":
-				case "cc":
-					contextText = "";
-					contextSource = "";
-					console.log(`  ${c.green}✓${c.reset} Context cleared.`);
-					break;
-				case "model":
-				case "m": {
-					const curProvider = currentProviderName || detectProvider();
-					if (arg) {
-						// Accept a number (from current provider list) or a model ID
-						const curModels = getModelsForProvider(curProvider);
-						let pick: string | undefined;
-						if (/^\d+$/.test(arg)) {
-							pick = curModels[parseInt(arg, 10) - 1]?.id;
-						} else {
-							pick = arg;
-						}
-						if (!pick) {
-							console.log(`  ${c.red}Invalid selection.${c.reset} Use ${c.cyan}/model${c.reset} to list available models.`);
-							break;
-						}
-
-						// Check if this model belongs to a different provider
-						const resolved = resolveModelWithProvider(pick);
-						if (!resolved) {
-							console.log(`  ${c.red}Model "${arg}" not found.${c.reset} Use ${c.cyan}/model${c.reset} to list available models.`);
-							break;
-						}
-
-						if (resolved.provider !== curProvider) {
-							// Cross-provider switch
-							const setupInfo = findSetupProvider(resolved.provider);
-							const envVar = setupInfo?.env || providerEnvKey(resolved.provider);
-							const provName = setupInfo?.name || resolved.provider;
-
-							if (!process.env[envVar]) {
-								console.log(`  ${c.yellow}That model requires ${provName}.${c.reset}`);
-								const gotKey = await promptForProviderKey(rl, { name: provName, env: envVar });
-								if (!gotKey) {
-									console.log(`  ${c.dim}Cancelled.${c.reset}`);
-									break;
-								}
-							}
-						}
-
-						currentModelId = pick;
-						currentModel = resolved.model;
-						currentProviderName = resolved.provider;
-						saveModelPreference(currentModelId);
-						console.log(`  ${c.green}✓${c.reset} Switched to ${c.bold}${currentModelId}${c.reset}`);
-						console.log();
-						printStatusLine();
-					} else {
-						// List models for current provider
-						const models = getModelsForProvider(curProvider);
-						const provLabel = curProvider === "ollama"
-							? "Ollama (local)"
-							: (findSetupProvider(curProvider)?.name || curProvider);
-						console.log(`\n  ${c.bold}Current model:${c.reset} ${c.cyan}${currentModelId}${c.reset} ${c.dim}(${provLabel})${c.reset}\n`);
-						const pad = String(Math.max(models.length, 1)).length;
-						for (let i = 0; i < models.length; i++) {
-							const m = models[i];
-							const num = String(i + 1).padStart(pad);
-							const dot = m.id === currentModelId ? `${c.green}●${c.reset}` : ` `;
-							const label = m.id === currentModelId
-								? `${c.cyan}${m.id}${c.reset}`
-								: `${c.dim}${m.id}${c.reset}`;
-							console.log(`  ${c.dim}${num}${c.reset} ${dot} ${label}`);
-						}
-
-						// Show Ollama models as a separate section
-						if (ollamaModelMap.size > 0) {
-							const ollamaNames: string[] = [];
-							for (const key of ollamaModelMap.keys()) {
-								if (!key.startsWith("ollama:")) continue;
-								ollamaNames.push(key.slice("ollama:".length));
-							}
-							if (ollamaNames.length > 0) {
-								console.log(`\n  ${c.dim}── Ollama (local) ──${c.reset}`);
-								for (const name of ollamaNames) {
-									const isActive = currentModelId === name || currentModelId === `ollama:${name}`;
-									const dot = isActive ? `${c.green}●${c.reset}` : ` `;
-									const sizeBytes = ollamaSizes.get(name) ?? 0;
-									const sizeStr = sizeBytes > 0 ? ` ${c.dim}${formatOllamaSize(sizeBytes)}${c.reset}` : "";
-									const lbl = isActive ? `${c.cyan}${name}${c.reset}` : `${c.dim}${name}${c.reset}`;
-									console.log(`     ${dot} ${lbl}${sizeStr}`);
-								}
-							}
-						}
-
-						if (models.length > 0) console.log(`\n  ${c.dim}${models.length} models · scroll up to see full list.${c.reset}`);
-						console.log(`  ${c.dim}Type${c.reset} ${c.cyan}/model <number>${c.reset} ${c.dim}or${c.reset} ${c.cyan}/model <id>${c.reset} ${c.dim}to switch.${c.reset}`);
-						console.log(`  ${c.dim}Type${c.reset} ${c.cyan}/provider${c.reset} ${c.dim}to switch provider.${c.reset}`);
-					}
-					break;
-				}
-				case "provider":
-				case "prov": {
-					const curProvider = currentProviderName || detectProvider();
-					const curLabel = curProvider === "ollama" ? "Ollama (local)" : (findSetupProvider(curProvider)?.name || curProvider);
-					console.log(`\n  ${c.bold}Current provider:${c.reset} ${c.cyan}${curLabel}${c.reset}\n`);
-
-					for (let i = 0; i < SETUP_PROVIDERS.length; i++) {
-						const p = SETUP_PROVIDERS[i];
-						const isCurrent = p.piProvider === curProvider;
-						const dot = isCurrent ? `${c.green}●${c.reset}` : ` `;
-						const label = isCurrent
-							? `${c.cyan}${p.name}${c.reset} ${c.dim}(${p.label})${c.reset}`
-							: `${p.name} ${c.dim}(${p.label})${c.reset}`;
-						console.log(`  ${c.dim}${i + 1}${c.reset} ${dot} ${label}`);
-					}
-
-					// Ollama — no key needed, always available if daemon is running
-					if (ollamaModelMap.size > 0) {
-						const isOllama = curProvider === "ollama";
-						const dot = isOllama ? `${c.green}●${c.reset}` : ` `;
-						const label = isOllama
-							? `${c.cyan}Ollama${c.reset} ${c.dim}(local · ${ollamaModelMap.size / 2} model${ollamaModelMap.size / 2 !== 1 ? "s" : ""})${c.reset}`
-							: `Ollama ${c.dim}(local · ${ollamaModelMap.size / 2} model${ollamaModelMap.size / 2 !== 1 ? "s" : ""})${c.reset}`;
-						console.log(`  ${c.dim}${SETUP_PROVIDERS.length + 1}${c.reset} ${dot} ${label}`);
-					}
-					console.log();
-
-					const maxChoice = SETUP_PROVIDERS.length + (ollamaModelMap.size > 0 ? 1 : 0);
-					const provChoice = await questionWithEsc(rl, `  ${c.cyan}Provider [1-${maxChoice}]:${c.reset} ${c.dim}(ESC to cancel)${c.reset} `);
-					if (provChoice === null) break; // ESC
-					const idx = parseInt(provChoice, 10) - 1;
-					if (isNaN(idx) || idx < 0 || idx >= maxChoice) {
-						console.log(`  ${c.dim}Cancelled.${c.reset}`);
-						break;
-					}
-
-					// Ollama choice
-					if (idx === SETUP_PROVIDERS.length) {
-						// Pick first Ollama model as default
-						const firstName = [...ollamaModelMap.keys()].find((k) => k.startsWith("ollama:"))?.slice("ollama:".length);
-						if (firstName) {
-							currentModelId = firstName;
-							const r = resolveModelWithProvider(firstName);
-							currentModel = r?.model;
-							currentProviderName = "ollama";
-							saveModelPreference(currentModelId);
-							console.log(`  ${c.green}✓${c.reset} Ollama · ${c.bold}${currentModelId}${c.reset}`);
-							console.log(`  ${c.dim}Type ${c.reset}${c.cyan}/model${c.reset}${c.dim} to switch between Ollama models.${c.reset}`);
-							printStatusLine();
-						}
-						break;
-					}
-
-					const chosen = SETUP_PROVIDERS[idx];
-					const gotKey = await promptForProviderKey(rl, chosen);
-
-					if (!gotKey) {
-						// null (ESC) or false (empty) → cancel
-						break;
-					}
-
-					// Auto-select first model from new provider
-					const defaultModel = getDefaultModelForProvider(chosen.piProvider);
-					if (defaultModel) {
-						currentModelId = defaultModel;
-						const provResolved = resolveModelWithProvider(currentModelId);
-						currentModel = provResolved?.model;
-						currentProviderName = provResolved?.provider || chosen.piProvider;
-						saveModelPreference(currentModelId);
-						console.log(`  ${c.green}✓${c.reset} ${chosen.name} · ${c.bold}${currentModelId}${c.reset}`);
-						printStatusLine();
-					} else {
-						console.log(`  ${c.red}No models available for ${chosen.name}.${c.reset}`);
-					}
-					break;
-				}
-				case "key": {
-					// Update API key for a provider
-					const curProvider = currentProviderName || detectProvider();
-					console.log();
-					for (let i = 0; i < SETUP_PROVIDERS.length; i++) {
-						const p = SETUP_PROVIDERS[i];
-						const hasKey = process.env[p.env] ? `${c.green}✓${c.reset}` : `${c.dim}○${c.reset}`;
-						console.log(`  ${c.dim}${i + 1}${c.reset} ${hasKey} ${p.name} ${c.dim}(${p.label})${c.reset}`);
-					}
-					console.log();
-					const keyChoice = await questionWithEsc(rl, `  ${c.cyan}Update key for [1-${SETUP_PROVIDERS.length}]:${c.reset} ${c.dim}(ESC to cancel)${c.reset} `);
-					if (keyChoice === null || !keyChoice) break;
-					const keyIdx = parseInt(keyChoice, 10) - 1;
-					if (isNaN(keyIdx) || keyIdx < 0 || keyIdx >= SETUP_PROVIDERS.length) {
-						console.log(`  ${c.dim}Cancelled.${c.reset}`);
-						break;
-					}
-					const keyProvider = SETUP_PROVIDERS[keyIdx];
-					const newKey = await questionWithEsc(rl, `  ${c.cyan}${keyProvider.env}:${c.reset} `);
-					if (newKey === null || !newKey) break;
-					const sanitized = newKey.replace(/[\r\n\x00-\x1f]/g, "").trim();
-					if (!sanitized) break;
-					process.env[keyProvider.env] = sanitized;
-					const credPath = path.join(RLM_HOME, "credentials");
-					try {
-						if (!fs.existsSync(RLM_HOME)) fs.mkdirSync(RLM_HOME, { recursive: true });
-						if (fs.existsSync(credPath)) {
-							const content = fs.readFileSync(credPath, "utf-8");
-							const filtered = content.split("\n").filter((l) => {
-								const t = l.trim();
-								if (t.startsWith("export ")) return !t.slice(7).startsWith(keyProvider.env + "=");
-								return !t.startsWith(keyProvider.env + "=");
-							}).join("\n");
-							fs.writeFileSync(credPath, filtered.endsWith("\n") ? filtered : filtered + "\n");
-						}
-						fs.appendFileSync(credPath, `${keyProvider.env}=${sanitized}\n`);
-						try { fs.chmodSync(credPath, 0o600); } catch {}
-						console.log(`  ${c.green}✓${c.reset} ${keyProvider.name} key updated`);
-					} catch {
-						console.log(`  ${c.yellow}!${c.reset} Could not save key.`);
-					}
-					break;
-				}
-				case "trajectories":
-				case "traj":
-					handleTrajectories();
-					break;
-				case "clear":
-					printWelcome();
-					break;
-				case "quit":
-				case "q":
-				case "exit":
-					console.log(`\n  ${c.dim}Goodbye!${c.reset}\n`);
-					process.exit(0);
-					break;
-				default:
-					console.log(`  ${c.red}Unknown command: /${cmd}${c.reset}. Type ${c.cyan}/help${c.reset} for commands.`);
-			}
-
-			rl.prompt();
-			return;
-		}
-
-		// @file shorthand
-		let query = expandAtFiles(line);
-		if (!query && line.startsWith("@")) {
-			rl.prompt();
-			return;
-		}
-		if (!query) query = line;
-
-		// Inline URL detection — extract URL from query, fetch as context
-		if (!contextText) {
-			const urlInline = query.match(/(https?:\/\/\S+)/);
-			if (urlInline) {
-				const url = urlInline[1];
-				const queryWithoutUrl = query.replace(url, "").trim();
-				console.log(`  ${c.dim}Fetching ${url}...${c.reset}`);
-				try {
-					contextText = await safeFetch(url);
-					contextSource = url;
-					const lines = contextText.split("\n").length;
-					console.log(
-						`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines.toLocaleString()} lines) from URL`
-					);
-					if (queryWithoutUrl) {
-						query = queryWithoutUrl;
-					} else {
-						// URL only, no query — prompt for one
-						printStatusLine();
-						console.log(`\n  ${c.dim}Now type your query...${c.reset}\n`);
-						rl.prompt();
-						return;
-					}
-				} catch (err: any) {
-					console.log(`  ${c.red}Failed to fetch URL: ${err.message}${c.reset}`);
-					console.log(`  ${c.dim}Running query as-is...${c.reset}`);
-				}
-			}
-		}
-
-		// Auto-detect bare file/directory paths (tilde, absolute, relative)
-		if (!contextText) {
-			const tokens = query.split(/\s+/);
-			const pathTokens: string[] = [];
-			for (const t of tokens) {
-				if (looksLikePath(t)) pathTokens.push(t);
-				else break;
-			}
-			if (pathTokens.length > 0) {
-				const existing = pathTokens.filter((t) => {
-					const p = path.resolve(expandTilde(t));
-					return fs.existsSync(p);
-				});
-				if (existing.length > 0) {
-					const filePaths = resolveFileArgs(existing);
-					if (filePaths.length === 1) {
-						try {
-							contextText = fs.readFileSync(filePaths[0], "utf-8");
-							contextSource = path.relative(process.cwd(), filePaths[0]) || filePaths[0];
-							const lines = contextText.split("\n").length;
-							console.log(
-								`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines} lines) from ${c.underline}${contextSource}${c.reset}`
-							);
-						} catch (err: any) {
-							console.log(`  ${c.red}Could not read file: ${err.message}${c.reset}`);
-						}
-					} else if (filePaths.length > 1) {
-						const { text, count, totalBytes } = loadMultipleFiles(filePaths);
-						contextText = text;
-						contextSource = `${count} files`;
-						console.log(
-							`  ${c.green}✓${c.reset} Loaded ${c.bold}${count}${c.reset} files (${(totalBytes / 1024).toFixed(1)}KB total)`
-						);
-					}
-					if (contextText) {
-						query = tokens.slice(pathTokens.length).join(" ") || query;
-					}
-				}
-			}
-		}
-
-		// Run query
-		await runQuery(query);
-		printStatusLine();
-		rl.prompt();
-	  } catch (err: any) {
-		showErrorMsg(String(err?.message || err));
-		rl.prompt();
-	  }
-	});
-
-	// Ctrl+C: abort running query, or double-tap to exit
-	let lastSigint = 0;
-	rl.on("SIGINT", () => {
-		if (isRunning && activeAc) {
-			activeSpinner?.stop();
-			console.log(`\n  ${c.red}Stopped${c.reset}`);
-			activeAc.abort();
-			try { activeRepl?.shutdown(); } catch { /* ok */ }
-			isRunning = false;
-			lastSigint = 0;
-		} else {
-			const now = Date.now();
-			if (now - lastSigint < 1000) {
-				// Double Ctrl+C — exit
-				console.log(`\n  ${c.dim}Goodbye!${c.reset}\n`);
-				process.exit(0);
-			}
-			lastSigint = now;
-			console.log(`\n  ${c.dim}Press Ctrl+C again to exit${c.reset}`);
-			rl.prompt();
-		}
-	});
-
-	rl.on("close", () => {
-		console.log(`\n  ${c.dim}Goodbye!${c.reset}\n`);
-		process.exit(0);
-	});
+	await startShell();
 }
 
 interactive().catch((err) => {
+	cleanupShell();
 	console.error(`${c.red}Fatal error:${c.reset}`, err);
 	process.exit(1);
 });
