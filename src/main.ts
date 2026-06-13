@@ -20,11 +20,15 @@ function buildHelp(): string {
 	const sec = (s: string) => `\n${paint(`  ◆ ${s}`, ICE, BOLD)}`;
 	const dim = (s: string) => paint(s, DIM);
 	const border = "─".repeat(55);
+	// Each row: │ + space + 53-col padded text + space + │ = 57 visible columns,
+	// matching the ┌─…─┐ border lines (padding ignores the ANSI color codes).
+	const row = (text: string, color: string) =>
+		`${DARK_ASH}${BOLD}│${RESET} ${color}${text.padEnd(53)}${RESET} ${DARK_ASH}${BOLD}│${RESET}`;
 	const header = [
 		`${DARK_ASH}${BOLD}┌${border}┐${RESET}`,
-		`${DARK_ASH}${BOLD}│${RESET} ${AMBER}${BOLD}  rlm — Recursive Language Models                      ${RESET} ${DARK_ASH}${BOLD}│${RESET}`,
-		`${DARK_ASH}${BOLD}│${RESET} ${STONE}  CLI for large-context LLM processing                 ${RESET} ${DARK_ASH}${BOLD}│${RESET}`,
-		`${DARK_ASH}${BOLD}│${RESET} ${DIM}  arXiv:2512.24601                                      ${RESET} ${DARK_ASH}${BOLD}│${RESET}`,
+		row("  rlm — Recursive Language Models", `${AMBER}${BOLD}`),
+		row("  CLI for large-context LLM processing", STONE),
+		row("  arXiv:2512.24601", DIM),
 		`${DARK_ASH}${BOLD}└${border}┘${RESET}`,
 	].join("\n");
 
@@ -97,11 +101,22 @@ async function main() {
 
 			if (benchName && benchScripts[benchName]) {
 				const { spawn } = await import("node:child_process");
+				const { existsSync } = await import("node:fs");
 				const { dirname, join } = await import("node:path");
 				const { fileURLToPath } = await import("node:url");
 				const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 				const script = join(root, benchScripts[benchName]);
 				const tsxBin = join(root, "node_modules", ".bin", "tsx");
+
+				// Benchmarks aren't shipped in the npm package (benchmarks/ isn't in
+				// "files" and tsx is a devDependency), so guard before spawning.
+				if (!existsSync(script) || !existsSync(tsxBin)) {
+					console.error(`Error: benchmark files not found (${!existsSync(script) ? script : tsxBin}).`);
+					console.error(`Benchmarks require a source checkout — they aren't included in the published npm package:`);
+					console.error(`  git clone https://github.com/viplismism/rlm-cli && cd rlm-cli && npm install`);
+					process.exitCode = 1;
+					break;
+				}
 
 				await new Promise<void>((resolve, reject) => {
 					const child = spawn(tsxBin, [script, ...benchArgs], {
