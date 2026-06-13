@@ -140,6 +140,9 @@ async function fetchUrl(url: string): Promise<string> {
 
 // ── Main ────────────────────────────────────────────────────────────────────
 
+// Module-level so the top-level catch can tell a Ctrl-C abort apart from a real failure
+const ac = new AbortController();
+
 async function main(): Promise<void> {
 	const args = parseArgs();
 
@@ -261,7 +264,6 @@ async function main(): Promise<void> {
 
 	// Start REPL
 	const repl = new PythonRepl();
-	const ac = new AbortController();
 
 	const abortAndExit = () => {
 		console.error("\nAborting...");
@@ -306,6 +308,11 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
+	// A user-initiated Ctrl-C surfaces here as an abort — not a real failure
+	if (ac.signal.aborted) {
+		console.error("\x1b[2mInterrupted.\x1b[0m");
+		process.exit(130);
+	}
 	console.error("Fatal error:", err);
 	process.exit(1);
 });

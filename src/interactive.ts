@@ -3,7 +3,7 @@
  * RLM Interactive — Production-quality interactive terminal REPL.
  *
  * Launch with `rlm` and get a persistent session where you can:
- *   - Set context (file/URL/paste)
+ *   - Set context (file/URL)
  *   - Type queries and watch the RLM loop run with smooth, real-time output
  *   - Browse previous trajectories
  */
@@ -14,7 +14,6 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as readline from "node:readline";
 import { stdin, stdout } from "node:process";
-import { fileURLToPath } from "node:url";
 import {
 	fetchOllamaModels, createOllamaModel, formatOllamaSize, OLLAMA_DEFAULT_BASE_URL,
 } from "./ollama.js";
@@ -41,6 +40,9 @@ process.on("unhandledRejection", (err: any) => {
 	console.error(`\n  \x1b[31mUnexpected error: ${err?.message || err}\x1b[0m\n`);
 	process.exit(1);
 });
+// Restore terminal state (alt screen, cursor, raw mode) when killed or hung up
+process.on("SIGTERM", () => { cleanupShell(); process.exit(143); });
+process.on("SIGHUP", () => { cleanupShell(); process.exit(129); });
 
 const { getModels, getProviders } = await import("@mariozechner/pi-ai");
 const { PythonRepl } = await import("./repl.js");
@@ -81,47 +83,6 @@ const c = {
 	bgPanelAlt:"\x1b[48;5;234m",
 };
 
-// ── Spinner ─────────────────────────────────────────────────────────────────
-
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-
-class Spinner {
-	private interval: ReturnType<typeof setInterval> | null = null;
-	private frameIndex = 0;
-	private message = "";
-	private startTime = Date.now();
-
-	start(message: string): void {
-		this.stop();
-		this.message = message;
-		this.startTime = Date.now();
-		this.frameIndex = 0;
-		this.render();
-		this.interval = setInterval(() => this.render(), 80);
-	}
-
-	update(message: string): void {
-		this.message = message;
-	}
-
-	stop(): void {
-		if (this.interval) {
-			clearInterval(this.interval);
-			this.interval = null;
-			process.stdout.write(c.clearLine);
-		}
-	}
-
-	private render(): void {
-		const frame = SPINNER_FRAMES[this.frameIndex % SPINNER_FRAMES.length];
-		const elapsed = ((Date.now() - this.startTime) / 1000).toFixed(1);
-		process.stdout.write(
-			`${c.clearLine}    ${c.cyan}${frame}${c.reset} ${this.message} ${c.dim}${elapsed}s${c.reset}`
-		);
-		this.frameIndex++;
-	}
-}
-
 // ── Constants ───────────────────────────────────────────────────────────────
 
 const DEFAULT_MODEL = process.env.RLM_MODEL || "claude-sonnet-4-6";
@@ -148,7 +109,6 @@ let isRunning = false;
 // Exposed so the readline SIGINT handler can abort the running query
 let activeAc: AbortController | null = null;
 let activeRepl: InstanceType<typeof PythonRepl> | null = null;
-let activeSpinner: Spinner | null = null;
 
 // ── Ollama local model registry ──────────────────────────────────────────────
 
@@ -354,22 +314,6 @@ function findSetupProvider(piProvider: string): (typeof SETUP_PROVIDERS)[number]
 	return SETUP_PROVIDERS.find((p) => p.piProvider === piProvider);
 }
 
-// ── Paste detection ─────────────────────────────────────────────────────────
-
-function isMultiLineInput(input: string): boolean {
-	return input.includes("\n");
-}
-
-function handleMultiLineAsContext(input: string): { context: string; query: string } | null {
-	const lines = input.split("\n");
-	if (lines.length > 3) {
-		const sizeKB = (input.length / 1024).toFixed(1);
-		console.log(`  ${c.green}✓${c.reset} Pasted ${c.bold}${lines.length} lines${c.reset} ${c.dim}(${sizeKB}KB)${c.reset}`);
-		return { context: input, query: "" };
-	}
-	return null;
-}
-
 // ── Banner ──────────────────────────────────────────────────────────────────
 
 function printBanner(): void {
@@ -385,136 +329,6 @@ ${a}    ██║  ██║███████╗██║ ╚═╝ ██�
 ${a}    ╚═╝  ╚═╝╚══════╝╚═╝     ╚═╝${r}
 ${paint("    recursive language models · arXiv:2512.24601", DIM)}
 `);
-}
-
-// ── Version ──────────────────────────────────────────────────────────────────
-
-function loadVersion(): string {
-	try {
-		const __dir = path.dirname(fileURLToPath(import.meta.url));
-		const pkgPath = path.join(__dir, "..", "package.json");
-		const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8")) as { version?: string };
-		return pkg.version ? `v${pkg.version}` : "";
-	} catch { return ""; }
-}
-
-// ── Welcome panel (Feynman-style two-column) ──────────────────────────────────
-
-function printWelcomePanel(): void {
-	const termW = Math.min(process.stdout.columns || 100, 110);
-	const version = loadVersion();
-
-	// Panel dimensions
-	const PANEL_W = Math.min(termW - 4, 96);  // total inner width (excl. borders)
-	const LEFT_W  = 36;                        // left column content width
-	const RIGHT_W = PANEL_W - LEFT_W - 3;     // right column (│ sep + padding)
-
-	const provider    = currentProviderName === "ollama"
-		? "Ollama (local)"
-		: (currentProviderName || detectProvider());
-	const modelShort  = currentModelId.length > LEFT_W
-		? currentModelId.slice(0, LEFT_W - 1) + "…"
-		: currentModelId;
-	const cwdShort    = process.cwd().replace(os.homedir(), "~").slice(0, LEFT_W);
-	const ctxInfo     = contextText
-		? `${(contextText.length / 1024).toFixed(1)}KB${contextSource ? ` · ${contextSource}` : ""}`
-		: "none";
-	const ctxDisplay  = ctxInfo.length > LEFT_W ? ctxInfo.slice(0, LEFT_W - 1) + "…" : ctxInfo;
-
-	// Left column rows  [label, value]
-	const subModelDisplay = config.sub_model
-		? (config.sub_model.length > LEFT_W ? config.sub_model.slice(0, LEFT_W - 1) + "…" : config.sub_model)
-		: null;
-
-	const leftRows: [string, string][] = [
-		["model",     modelShort],
-		...(subModelDisplay ? [["sub-model", subModelDisplay] as [string, string]] : []),
-		["provider",  provider],
-		["directory", cwdShort],
-		["context",   ctxDisplay],
-		["",          ""],
-		["max iters", String(config.max_iterations)],
-		["sub-queries", String(config.max_sub_queries)],
-		["queries run", String(queryCount)],
-	];
-
-	// Right column: slash command reference
-	const rightRows: [string, string][] = [
-		["/file <path>",   "load file / dir / glob"],
-		["/url <url>",     "fetch URL as context"],
-		["/paste",         "multi-line paste"],
-		["@file <query>",  "inline load + query"],
-		["",               ""],
-		["/model",         "list / switch model"],
-		["/provider",      "switch provider"],
-		["/key",           "update API key"],
-		["",               ""],
-		["/trajectories",  "browse saved runs"],
-		["/clear",         "clear screen"],
-		["/help",          "all commands"],
-		["/quit",          "exit"],
-	];
-
-	const border = "─".repeat(PANEL_W + 2);
-
-	// Version tag centered in top border
-	const vTag    = version ? ` ${version} ` : "";
-	const vTagLen = vTag.length;
-	const lDash   = Math.floor((PANEL_W + 2 - vTagLen) / 2);
-	const rDash   = PANEL_W + 2 - vTagLen - lDash;
-	const topBorder = `${DARK_ASH}${BOLD}┌${"─".repeat(lDash)}${RESET}${DIM}${vTag}${RESET}${DARK_ASH}${BOLD}${"─".repeat(rDash)}┐${RESET}`;
-
-	// Column header
-	const renderHeader = (left: string, right: string): string => {
-		const lPad = Math.max(0, LEFT_W - left.length);
-		const rPad = Math.max(0, RIGHT_W - right.length);
-		return `${DARK_ASH}${BOLD}│${RESET} ${AMBER}${BOLD}${left}${" ".repeat(lPad)}${RESET} ${DARK_ASH}${BOLD}│${RESET} ${AMBER}${BOLD}${right}${" ".repeat(rPad)}${RESET} ${DARK_ASH}${BOLD}│${RESET}`;
-	};
-
-	// Separator row (├──┤)
-	const sepBorder = `${DARK_ASH}${BOLD}├${"─".repeat(LEFT_W + 2)}┼${"─".repeat(RIGHT_W + 2)}┤${RESET}`;
-
-	// Content row
-	const renderRow = (leftLabel: string, leftVal: string, rightCmd: string, rightDesc: string): string => {
-		// Left cell
-		let leftCell: string;
-		if (!leftLabel && !leftVal) {
-			leftCell = " ".repeat(LEFT_W);
-		} else {
-			const lbl = paint(leftLabel.padEnd(11), DIM);
-			const val = paint(leftVal.slice(0, LEFT_W - 12), STONE);
-			const rawLen = leftLabel.padEnd(11).length + leftVal.slice(0, LEFT_W - 12).length;
-			const lPad = " ".repeat(Math.max(0, LEFT_W - rawLen));
-			leftCell = `${lbl} ${val}${lPad}`;
-		}
-
-		// Right cell
-		let rightCell: string;
-		if (!rightCmd && !rightDesc) {
-			rightCell = " ".repeat(RIGHT_W);
-		} else {
-			const cmd  = paint(rightCmd.padEnd(18), SAGE);
-			const desc = paint(rightDesc.slice(0, RIGHT_W - 19), ASH);
-			const rawLen = 18 + rightDesc.slice(0, RIGHT_W - 19).length;
-			const rPad = " ".repeat(Math.max(0, RIGHT_W - rawLen));
-			rightCell = `${cmd} ${desc}${rPad}`;
-		}
-
-		return `${DARK_ASH}${BOLD}│${RESET} ${leftCell} ${DARK_ASH}${BOLD}│${RESET} ${rightCell} ${DARK_ASH}${BOLD}│${RESET}`;
-	};
-
-	const rows = Math.max(leftRows.length, rightRows.length);
-
-	// Print
-	console.log(topBorder);
-	console.log(renderHeader("Session", "Slash Commands"));
-	console.log(sepBorder);
-	for (let i = 0; i < rows; i++) {
-		const [ll, lv] = leftRows[i] ?? ["", ""];
-		const [rc, rd] = rightRows[i] ?? ["", ""];
-		console.log(renderRow(ll, lv, rc, rd));
-	}
-	console.log(`${DARK_ASH}${BOLD}└${"─".repeat(LEFT_W + 2)}┴${"─".repeat(RIGHT_W + 2)}┘${RESET}`);
 }
 
 // ── Status line (compact — used after queries) ───────────────────────────────
@@ -533,15 +347,6 @@ function printStatusLine(): void {
 	console.log(
 		`  ${paint(modelShort, AMBER)}  ${paint(provider, DIM)}  ${ctxInfo}  ${paint(`Q:${queryCount}`, DIM)}`
 	);
-}
-
-// ── Welcome ──────────────────────────────────────────────────────────────────
-
-function printWelcome(): void {
-	console.clear();
-	printBanner();
-	printWelcomePanel();
-	console.log(paint(`\n  Type your query or /help for commands\n`, DIM));
 }
 
 /** Generate a concise directory tree string (like `tree -L 2`). */
@@ -594,54 +399,6 @@ function buildCwdContext(): string {
 	return parts.join("\n");
 }
 
-// ── Help ────────────────────────────────────────────────────────────────────
-
-function printCommandHelp(): void {
-	const cmd = (s: string) => paint(s, AMBER, BOLD);
-	const kw  = (s: string) => paint(s, ICE);
-	const dim = (s: string) => paint(s, DIM);
-	const sec = (s: string) => `\n${paint(`  ◆ ${s}`, ICE, BOLD)}`;
-
-	console.log(`
-${sec("Loading Context")}
-  ${cmd("/file")} <path>              Load a single file
-  ${cmd("/file")} <p1> <p2> …        Load multiple files
-  ${cmd("/file")} <dir>/             Load all files in a directory (recursive)
-  ${cmd("/file")} src/**/*.ts        Load files matching a glob pattern
-  ${cmd("/url")} <url>               Fetch URL as context
-  ${cmd("/paste")}                   Multi-line paste mode (type ${kw("EOF")} to finish)
-  ${cmd("/clear-context")}           Unload context
-
-${sec("@ Shorthand")}  ${dim("(inline file loading)")}
-  ${cmd("@file.ts")} <query>          Load file and ask in one shot
-  ${cmd("@a.ts @b.ts")} <query>       Load multiple files + query
-  ${cmd("@src/")} <query>             Load directory + query
-  ${cmd("@src/**/*.ts")} <query>      Load glob + query
-
-${sec("Model & Provider")}
-  ${cmd("/model")}                   List models for current provider
-  ${cmd("/model")} <#|id>            Switch model by number or ID
-  ${cmd("/provider")}                Switch provider (Anthropic · OpenAI · Google · OpenRouter)
-  ${cmd("/key")}                     Update an API key
-
-${sec("Tools")}
-  ${cmd("/trajectories")}            List saved runs
-
-${sec("General")}
-  ${cmd("/clear")}                   Clear screen
-  ${cmd("/help")}                    Show this help
-  ${cmd("/quit")}                    Exit
-
-${sec("Tips")}
-  ${dim("◇")} Just type a question — no context needed for general queries
-  ${dim("◇")} Paste a URL directly to fetch it as context
-  ${dim("◇")} Paste 4+ lines of text to set it as context
-  ${dim("◇")} ${paint("Ctrl+C", BOLD)} stops a running query  ·  ${paint("Ctrl+C twice", BOLD)} exits
-  ${dim("◇")} Directories skip node_modules, .git, dist, binaries, etc.
-  ${dim("◇")} Limits: ${MAX_FILES} files max, ${MAX_TOTAL_BYTES / 1024 / 1024}MB total
-`);
-}
-
 // ── Slash command handlers ──────────────────────────────────────────────────
 
 /** Check if a token looks like a file path (vs. plain query text). */
@@ -652,183 +409,6 @@ function looksLikePath(token: string): boolean {
 	if (token.startsWith(".")) return true;
 	if (/\.\w{1,6}$/.test(token)) return true; // has file extension
 	return false;
-}
-
-async function handleFile(arg: string): Promise<string | void> {
-	if (!arg) {
-		console.log(`  ${c.red}Usage: /file <path> [query]${c.reset}`);
-		console.log(`  ${c.dim}Examples: /file src/main.ts  |  /file src/  |  /file src/**/*.ts${c.reset}`);
-		return;
-	}
-	const tokens = arg.split(/\s+/).filter(Boolean);
-
-	// Separate paths from query text
-	const pathTokens: string[] = [];
-	const queryTokens: string[] = [];
-	let pastPaths = false;
-	for (const t of tokens) {
-		if (!pastPaths && looksLikePath(t)) {
-			pathTokens.push(t);
-		} else {
-			pastPaths = true;
-			queryTokens.push(t);
-		}
-	}
-
-	if (pathTokens.length === 0) {
-		console.log(`  ${c.red}No file path found in: ${arg}${c.reset}`);
-		return;
-	}
-
-	const filePaths = resolveFileArgs(pathTokens);
-
-	if (filePaths.length === 0) {
-		console.log(`  ${c.red}No files found.${c.reset}`);
-		return;
-	}
-
-	if (filePaths.length === 1) {
-		try {
-			contextText = fs.readFileSync(filePaths[0], "utf-8");
-			contextSource = path.relative(process.cwd(), filePaths[0]) || filePaths[0];
-			contextIsDefault = false;
-			const lines = contextText.split("\n").length;
-			console.log(
-				`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines.toLocaleString()} lines) from ${c.underline}${contextSource}${c.reset}`
-			);
-		} catch (err: any) {
-			console.log(`  ${c.red}Could not read file: ${err.message}${c.reset}`);
-		}
-	} else {
-		const { text, count, totalBytes } = loadMultipleFiles(filePaths);
-		contextText = text;
-		contextSource = `${count} files`;
-		console.log(
-			`  ${c.green}✓${c.reset} Loaded ${c.bold}${count}${c.reset} files (${(totalBytes / 1024).toFixed(1)}KB total)`
-		);
-		// Show file list
-		for (const fp of filePaths.slice(0, 20)) {
-			console.log(`    ${c.dim}•${c.reset} ${path.relative(process.cwd(), fp)}`);
-		}
-		if (filePaths.length > 20) {
-			console.log(`    ${c.dim}... and ${filePaths.length - 20} more${c.reset}`);
-		}
-	}
-
-	// Return query text if provided after paths
-	if (queryTokens.length > 0) return queryTokens.join(" ");
-}
-
-async function handleUrl(arg: string): Promise<void> {
-	if (!arg) {
-		console.log(`  ${c.red}Usage: /url <url>${c.reset}`);
-		return;
-	}
-	console.log(`  ${c.dim}Fetching ${arg}...${c.reset}`);
-	try {
-		contextText = await safeFetch(arg);
-		contextSource = arg;
-		contextIsDefault = false;
-		const lines = contextText.split("\n").length;
-		console.log(
-			`  ${c.green}✓${c.reset} Fetched ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines.toLocaleString()} lines)`
-		);
-	} catch (err: any) {
-		console.log(`  ${c.red}Failed: ${err.message}${c.reset}`);
-	}
-}
-
-function handlePaste(rl: readline.Interface): Promise<void> {
-	return new Promise((resolve) => {
-		console.log(`  ${c.dim}Paste your context below. Type ${c.bold}EOF${c.reset}${c.dim} on an empty line to finish.${c.reset}`);
-		const lines: string[] = [];
-		const onLine = (line: string) => {
-			if (line.trim() === "EOF") {
-				rl.removeListener("line", onLine);
-				contextText = lines.join("\n");
-				contextSource = "(pasted)";
-				contextIsDefault = false;
-				console.log(
-					`  ${c.green}✓${c.reset} Loaded ${c.bold}${contextText.length.toLocaleString()}${c.reset} chars (${lines.length} lines) from paste`
-				);
-				resolve();
-				return;
-			}
-			lines.push(line);
-		};
-		rl.on("line", onLine);
-	});
-}
-
-function handleContext(): void {
-	if (!contextText) {
-		console.log(`  ${c.dim}No context loaded. Use /file, /url, @file, or /paste.${c.reset}`);
-		return;
-	}
-	const lines = contextText.split("\n").length;
-	const sizeKB = (contextText.length / 1024).toFixed(1);
-	console.log(`  ${c.bold}Context:${c.reset} ${contextText.length.toLocaleString()} chars (${sizeKB}KB), ${lines.toLocaleString()} lines`);
-	console.log(`  ${c.bold}Source:${c.reset}  ${contextSource}`);
-
-	// For multi-file context, extract and display individual file paths
-	const fileSeparators = contextText.match(/^=== .+ ===$/gm);
-	if (fileSeparators && fileSeparators.length > 1) {
-		console.log(`  ${c.bold}Files:${c.reset}   ${fileSeparators.length}`);
-		for (const sep of fileSeparators.slice(0, 20)) {
-			const name = sep.replace(/^=== /, "").replace(/ ===$/, "");
-			console.log(`    ${c.dim}•${c.reset} ${name}`);
-		}
-		if (fileSeparators.length > 20) {
-			console.log(`    ${c.dim}... and ${fileSeparators.length - 20} more${c.reset}`);
-		}
-	} else {
-		console.log();
-		const preview = contextText.slice(0, 500);
-		const previewLines = preview.split("\n").slice(0, 8);
-		for (const l of previewLines) {
-			console.log(`  ${c.dim}│${c.reset} ${l}`);
-		}
-		if (contextText.length > 500) {
-			console.log(`  ${c.dim}│ ...${c.reset}`);
-		}
-	}
-}
-
-function handleTrajectories(): void {
-	if (!fs.existsSync(SESSIONS_DIR)) {
-		console.log(`  ${c.dim}No sessions yet.${c.reset}`);
-		return;
-	}
-
-	const sessions = fs
-		.readdirSync(SESSIONS_DIR)
-		.filter((s) => fs.statSync(path.join(SESSIONS_DIR, s)).isDirectory())
-		.sort()
-		.reverse();
-
-	if (sessions.length === 0) {
-		console.log(`  ${c.dim}No sessions yet.${c.reset}`);
-		return;
-	}
-
-	console.log(`\n  ${c.bold}Saved sessions${c.reset} ${c.dim}(~/.rlm/sessions/)${c.reset}\n`);
-
-	const shown = sessions.slice(0, 10);
-	for (const s of shown) {
-		const dir = path.join(SESSIONS_DIR, s);
-		const files = fs.readdirSync(dir).filter((f) => f.endsWith(".json"));
-		const isCurrent = s === SESSION_ID;
-		const dot = isCurrent ? `${c.green}●${c.reset}` : `${c.dim}·${c.reset}`;
-		const label = isCurrent
-			? `${c.accent}${s}${c.reset} ${c.dim}(current)${c.reset}`
-			: `${c.dim}${s}${c.reset}`;
-		console.log(`  ${dot} ${label} ${c.dim}${files.length} query${files.length !== 1 ? "s" : ""}${c.reset}`);
-	}
-
-	if (sessions.length > 10) {
-		console.log(`  ${c.dim}... and ${sessions.length - 10} older sessions${c.reset}`);
-	}
-	console.log();
 }
 
 // ── Display helpers ─────────────────────────────────────────────────────────
@@ -893,50 +473,6 @@ function displayUserPrompt(query: string): void {
 
 // ── Display functions ───────────────────────────────────────────────────────
 
-function displayCode(code: string): void {
-	const lines = code.split("\n");
-	const lineNumWidth = String(lines.length).length;
-	const codeMaxW = MAX_CONTENT_W - lineNumWidth - 1;
-
-	console.log(boxTop("Code", c.code));
-	for (let i = 0; i < lines.length; i++) {
-		const wrapped = wrapText(lines[i], codeMaxW);
-		for (let j = 0; j < wrapped.length; j++) {
-			const prefix = j === 0
-				? `${c.dim}${String(i + 1).padStart(lineNumWidth)}${c.reset}`
-				: " ".repeat(lineNumWidth);
-			console.log(`    ${c.code}\u258e${c.reset} ${prefix} ${c.code}${wrapped[j]}${c.reset}`);
-		}
-	}
-	console.log(boxBottom(c.code));
-}
-
-function displayOutput(output: string): void {
-	const lines = output.split("\n").filter(l => l.trim() !== "");
-	if (lines.length === 0) return;
-
-	console.log(boxTop("Output", c.green));
-	for (const line of lines) {
-		for (const chunk of wrapText(line, MAX_CONTENT_W)) {
-			console.log(boxLine(`${c.green}${chunk}${c.reset}`, c.green));
-		}
-	}
-	console.log(boxBottom(c.green));
-}
-
-function displayError(stderr: string): void {
-	const lines = stderr.split("\n").filter(l => l.trim() !== "");
-	if (lines.length === 0) return;
-
-	console.log(boxTop("Error", c.red));
-	for (const line of lines) {
-		for (const chunk of wrapText(line, MAX_CONTENT_W)) {
-			console.log(boxLine(`${c.red}${chunk}${c.reset}`, c.red));
-		}
-	}
-	console.log(boxBottom(c.red));
-}
-
 function showErrorMsg(msg: string): void {
 	const lines = msg.split(/\n/).filter(l => l.trim());
 	console.log(boxTop("Error", c.red));
@@ -950,19 +486,6 @@ function showErrorMsg(msg: string): void {
 
 function formatSize(chars: number): string {
 	return chars >= 1000 ? `${(chars / 1000).toFixed(1)}K` : `${chars}`;
-}
-
-function displaySubQueryStart(_info: SubQueryStartInfo): void {
-	// Nothing printed here — we wait for the result and show a single compact line
-}
-
-function displaySubQueryResult(info: SubQueryInfo): void {
-	const elapsed = (info.elapsedMs / 1000).toFixed(1);
-	const instrPreview = truncateStr(info.instruction.replace(/\n/g, " "), 55);
-	const resultPreview = truncateStr(info.resultPreview.replace(/\n/g, " "), 45);
-	console.log(
-		`    ${c.subquery}↳${c.reset} ${c.dim}#${info.index}${c.reset}  ${instrPreview}  ${c.dim}→${c.reset}  ${c.result}${resultPreview}${c.reset}  ${c.dim}${elapsed}s${c.reset}`
-	);
 }
 
 // ── Available models list ────────────────────────────────────────────────────
@@ -1016,12 +539,6 @@ function getModelsForProvider(providerName: string): { id: string; provider: str
 		}
 	}
 	return items;
-}
-
-// ── Truncate helper ─────────────────────────────────────────────────────────
-
-function truncateStr(text: string, max: number): string {
-	return text.length <= max ? text : text.slice(0, max - 3) + "...";
 }
 
 // ── Multi-file context loading ──────────────────────────────────────────────
