@@ -4,7 +4,7 @@
  *
  * Priority (highest wins):
  *   1. Shell environment variables (already in process.env)
- *   2. .env in package root
+ *   2. .env in the current working directory, else .env in package root
  *   3. ~/.rlm/credentials — persistent keys saved by first-run setup
  *
  * Supported provider keys include ANTHROPIC_API_KEY, OPENAI_API_KEY,
@@ -45,9 +45,12 @@ const fileVars = new Map<string, string>();
 const credVars = parseEnvFile(path.join(os.homedir(), ".rlm", "credentials"));
 for (const [k, v] of credVars) fileVars.set(k, v);
 
-// 2. Load .env from package root (overwrites credentials)
+// 2. Load .env (overwrites credentials): prefer the current working
+// directory, falling back to the package root (matters for global installs)
 const __dir = path.dirname(fileURLToPath(import.meta.url));
-const dotenvVars = parseEnvFile(path.resolve(__dir, "..", ".env"));
+const cwdDotenv = path.resolve(process.cwd(), ".env");
+const dotenvPath = fs.existsSync(cwdDotenv) ? cwdDotenv : path.resolve(__dir, "..", ".env");
+const dotenvVars = parseEnvFile(dotenvPath);
 for (const [k, v] of dotenvVars) fileVars.set(k, v);
 
 // 3. Apply: only set if NOT already in shell env (shell always wins)
