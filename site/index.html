@@ -570,7 +570,7 @@
         <div class="how-step reveal">
           <span class="step-num">01</span>
           <h3 class="step-title">Context loads into a Python REPL</h3>
-          <p class="step-desc">Your files, URLs, or pasted text become a <code>context</code> variable in a persistent Python session.</p>
+          <p class="step-desc">Your files and URLs become a <code>context</code> variable in a persistent Python session.</p>
         </div>
         <div class="how-step reveal">
           <span class="step-num">02</span>
@@ -614,7 +614,7 @@
         </div>
         <div class="cmd-row">
           <div class="cmd-key">rlm benchmark oolong</div>
-          <div class="cmd-desc">Run standard long-context benchmarks — compare direct LLM vs RLM on the same query</div>
+          <div class="cmd-desc">Run standard long-context benchmarks — requires a source checkout (not included in npm installs)</div>
         </div>
       </div>
     </div>
@@ -634,10 +634,9 @@
         <div class="cmd-row"><div class="cmd-key">@src/ query</div><div class="cmd-desc">Load entire directory + query</div></div>
         <div class="cmd-row"><div class="cmd-key">/file &lt;path&gt;</div><div class="cmd-desc">Load file, directory, or glob pattern as context</div></div>
         <div class="cmd-row"><div class="cmd-key">/url &lt;url&gt;</div><div class="cmd-desc">Fetch URL as context</div></div>
-        <div class="cmd-row"><div class="cmd-key">/paste</div><div class="cmd-desc">Multi-line paste mode (type EOF to finish)</div></div>
-        <div class="cmd-row"><div class="cmd-key">/model &lt;id&gt;</div><div class="cmd-desc">Switch model by name or number</div></div>
-        <div class="cmd-row"><div class="cmd-key">/provider</div><div class="cmd-desc">Switch between Anthropic, OpenAI, Google, OpenRouter</div></div>
-        <div class="cmd-row"><div class="cmd-key">/context</div><div class="cmd-desc">Show loaded context info + file list</div></div>
+        <div class="cmd-row"><div class="cmd-key">/model &lt;id&gt;</div><div class="cmd-desc">List models or switch by model ID</div></div>
+        <div class="cmd-row"><div class="cmd-key">/provider</div><div class="cmd-desc">Switch between Anthropic, OpenAI, Google, OpenRouter, Ollama</div></div>
+        <div class="cmd-row"><div class="cmd-key">/trace</div><div class="cmd-desc">Open the live RLM trace window</div></div>
         <div class="cmd-row"><div class="cmd-key">/trajectories</div><div class="cmd-desc">List saved runs</div></div>
         <div class="cmd-row"><div class="cmd-key">Ctrl+C</div><div class="cmd-desc">Stop running query · Ctrl+C twice to exit</div></div>
       </div>
@@ -678,7 +677,7 @@
           <div class="feature-icon">📂</div>
           <div>
             <p class="feature-title">Flexible context loading</p>
-            <p class="feature-desc">Files, directories, globs, URLs, pasted text. Up to 100 files / 10MB. Auto-skips binaries and <code>node_modules</code>.</p>
+            <p class="feature-desc">Files, directories, globs, URLs. Up to 100 files / 10MB. Auto-skips binaries and <code>node_modules</code>.</p>
           </div>
         </div>
         <div class="feature">
@@ -705,7 +704,7 @@
       <div class="reveal">
         <p class="section-label">Providers</p>
         <h2 class="section-title">Bring your own API key.</h2>
-        <p class="section-desc">First launch prompts for setup. Keys are saved to <code>~/.rlm/credentials</code> with 600 permissions.</p>
+        <p class="section-desc">First launch prompts for setup. Keys load from env vars, a <code>.env</code> in your working directory, or <code>~/.rlm/credentials</code> (saved with 600 permissions).</p>
       </div>
 
       <div class="provider-grid reveal">
@@ -726,6 +725,12 @@
           <p class="provider-model">auto (multi-provider)</p>
         </div>
       </div>
+
+      <p class="section-desc reveal" style="margin-top:40px;">
+        <strong>Security note:</strong> rlm executes model-generated Python with no sandbox — full filesystem
+        and network access as your user. A prompt-injected context document can run arbitrary code.
+        Only use it on content you trust, or inside a container/VM.
+      </p>
     </div>
   </section>
 

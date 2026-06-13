@@ -12,6 +12,12 @@ Instead of dumping a huge context into a single LLM call, RLM lets the model wri
   <img src="demo.png" alt="rlm-cli demo" width="750">
 </p>
 
+## Security
+
+**rlm executes model-generated Python with NO sandbox.** The code the LLM writes runs directly on your machine as your user — full filesystem, network, and process access. A malicious or prompt-injected context document (a file, a fetched URL) can lead to arbitrary code execution, including reading `~/.rlm/credentials` and exfiltrating your API keys.
+
+Only run rlm against content you trust, or run it inside a container/VM.
+
 ## What's New in v0.5.0
 
 - **Ollama support** — use any locally-installed model (llama3, mistral, qwen, etc.) with zero API key setup
@@ -59,7 +65,7 @@ Set a custom daemon URL with `OLLAMA_BASE_URL=http://...`.
 
 Keys are loaded from (highest priority wins):
 1. Shell environment variables
-2. `.env` file in project root
+2. `.env` file in the current working directory (falls back to the package root)
 3. `~/.rlm/credentials`
 
 ### From Source
@@ -90,21 +96,18 @@ Persistent session with a two-column welcome panel showing your model, provider,
 |---------|-------------|
 | `/file <path>` | Load file, directory, or glob as context |
 | `/url <url>` | Fetch URL as context |
-| `/paste` | Multi-line paste mode |
 | `@file <query>` | Load file + run query in one step |
-| `/model [id\|#]` | List or switch model (shows Ollama models too) |
+| `/model [id]` | List or switch model by ID (shows Ollama models too) |
 | `/provider` | Switch provider (includes Ollama if running) |
-| `/key` | Update an API key |
+| `/trace` | Open the live RLM trace window |
 | `/trajectories` | Browse saved sessions |
-| `/context` | Show loaded context info |
-| `/clear` | Clear screen |
+| `/clear` | Clear the transcript |
 | `/help` | Full command reference |
 | `/quit` | Exit |
 
 **Tips:**
 - Just type a question — no context needed for general queries
 - Paste a URL directly to fetch it as context
-- Paste 4+ lines of text to set it as context
 - **Ctrl+C** stops a running query, **Ctrl+C twice** exits
 
 ### Single-Shot Mode
@@ -145,6 +148,8 @@ rlm benchmark oolong --idx 10
 ```
 
 Python dependencies are auto-installed into a `.venv` on first run.
+
+> **Note:** `rlm benchmark` requires a source checkout of the repo (see [From Source](#from-source)) — it is not available in npm installs.
 
 ---
 
