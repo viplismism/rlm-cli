@@ -284,8 +284,8 @@ function extractCodeFromResponse(response: AssistantMessage): string | null {
 			!trimmed.startsWith("#") &&
 			(trimmed.includes("print(") ||
 				trimmed.includes("import ") ||
-				trimmed.includes("for ") && trimmed.includes(":") ||
-				trimmed.includes("def ") && trimmed.includes(":") ||
+				(trimmed.includes("for ") && trimmed.includes(":")) ||
+				(trimmed.includes("def ") && trimmed.includes(":")) ||
 				trimmed.includes("FINAL(") ||
 				trimmed.includes("llm_query("))
 		) {
@@ -316,18 +316,12 @@ export async function runRlmLoop(options: RlmOptions): Promise<RlmResult> {
 	let totalInputTokens = 0;
 	let totalOutputTokens = 0;
 
-	// depth tracks recursion level; currently max_depth = 1 (sub-calls are flat LLMs, not nested RLMs)
-	const currentDepth = 0;
-
 	const llmQueryHandler = async (subContext: string, instruction: string) => {
 		if (signal?.aborted) throw new Error("Aborted");
 		if (totalSubQueries >= config.max_sub_queries) {
 			return `[ERROR] Maximum sub-query limit (${config.max_sub_queries}) reached. Call FINAL() with your best answer now.`;
 		}
-		// Depth check: sub-queries are always depth+1; we cap at max_depth
-		if (currentDepth >= config.max_depth) {
-			return `[ERROR] Maximum recursion depth (${config.max_depth}) reached. Call FINAL() with your best answer now.`;
-		}
+		// Sub-queries are single-level (flat LLM calls, not nested RLMs) and depth is not tracked; a future recursive implementation must add its own max_depth guard here.
 		++totalSubQueries;
 		const queryIndex = ++iterationSubQueries;
 		const sqStart = Date.now();

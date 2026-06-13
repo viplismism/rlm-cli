@@ -16,10 +16,12 @@ All protocol I/O uses saved references to the original sys.stdout/sys.stdin
 so that exec'd code can freely redirect sys.stdout for print() capture.
 """
 
+import ast
 import json
 import sys
 import uuid
 import io
+import inspect
 import traceback
 import asyncio
 import threading
@@ -60,9 +62,13 @@ def FINAL(x):
 def FINAL_VAR(x):
     """Set the final answer from a variable and terminate the RLM loop."""
     global __final_result__
-    if __final_result__ is not None and x is not None:
+    if x is None:
+        # Don't silently drop the final — tell the model so it can recover
+        print("[Warning] FINAL_VAR received None — not treated as final; check that your variable is set", file=sys.stderr)
+        return
+    if __final_result__ is not None:
         print(f"[Warning] FINAL_VAR() called again — overwriting previous answer", file=sys.stderr)
-    __final_result__ = str(x) if x is not None else None
+    __final_result__ = str(x)
 
 
 def _stdin_reader_loop() -> None:
@@ -170,27 +176,16 @@ def _execute_code(code: str) -> None:
     try:
         sys.stdout = captured_stdout
         sys.stderr = captured_stderr
-        # Support both sync and async code (await expressions)
-        try:
-            # Try to compile as regular code first
-            compiled = compile(code, "<repl>", "exec")
+        # Support both sync and async code (top-level await expressions)
+        compiled = compile(code, "<rlm>", "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+        if compiled.co_flags & inspect.CO_COROUTINE:
+            # Code contains top-level await — eval() yields a coroutine that we
+            # run to completion. Assignments persist because _user_ns is the
+            # globals namespace, so no locals copy-back is needed and
+            # runtime-critical symbols stay intact (refreshed before each exec).
+            asyncio.run(eval(compiled, _user_ns))
+        else:
             exec(compiled, _user_ns)
-        except SyntaxError as e:
-            if "await" in str(code):
-                # Code contains await — run it in an async context
-                # We must copy locals back to user namespace so variables persist across iterations
-                # But we must NOT clobber runtime-critical symbols
-                _protected = {'context', 'llm_query', 'async_llm_query', 'FINAL', 'FINAL_VAR', '__builtins__'}
-                async_code = "async def __async_exec__():\n"
-                for line in code.split("\n"):
-                    async_code += f"    {line}\n"
-                async_code += "    return {k: v for k, v in locals().items()}\n"
-                async_code += "\nimport asyncio as _asyncio\n"
-                async_code += "_async_locals = _asyncio.run(__async_exec__())\n"
-                async_code += f"globals().update({{k: v for k, v in _async_locals.items() if k not in {_protected!r}}})\n"
-                exec(compile(async_code, "<repl>", "exec"), _user_ns)
-            else:
-                raise e
     except Exception:
         traceback.print_exc(file=captured_stderr)
     finally:

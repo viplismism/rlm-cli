@@ -63,6 +63,10 @@ export class PythonRepl {
 	private rl: readline.Interface | null = null;
 	private llmQueryHandler: LlmQueryHandler | null = null;
 
+	/** Abort signal + listener registered in start(), removed in cleanup() so restarts don't stack listeners. */
+	private abortSignal: AbortSignal | null = null;
+	private abortListener: (() => void) | null = null;
+
 	/**
 	 * Pending resolvers for messages we're waiting on from Python.
 	 * Each entry maps a message type to a one-shot resolve/reject pair.
@@ -114,13 +118,11 @@ export class PythonRepl {
 		});
 
 		if (signal) {
-			signal.addEventListener(
-				"abort",
-				() => {
-					this.shutdown();
-				},
-				{ once: true },
-			);
+			this.abortSignal = signal;
+			this.abortListener = () => {
+				this.shutdown();
+			};
+			signal.addEventListener("abort", this.abortListener, { once: true });
 		}
 
 		await this.waitForMessage("ready");
@@ -268,6 +270,12 @@ export class PythonRepl {
 	}
 
 	private cleanup(): void {
+		// Detach the abort listener so restarts on the same signal don't stack stale closures
+		if (this.abortSignal && this.abortListener) {
+			this.abortSignal.removeEventListener("abort", this.abortListener);
+		}
+		this.abortSignal = null;
+		this.abortListener = null;
 		this.rl?.close();
 		this.rl = null;
 		this.proc = null;
