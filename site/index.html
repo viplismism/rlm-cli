@@ -727,9 +727,10 @@
       </div>
 
       <p class="section-desc reveal" style="margin-top:40px;">
-        <strong>Security note:</strong> rlm executes model-generated Python with no sandbox — full filesystem
-        and network access as your user. A prompt-injected context document can run arbitrary code.
-        Only use it on content you trust, or inside a container/VM.
+        <strong>Security note:</strong> rlm runs the model-generated Python inside an OS-level sandbox
+        (macOS Seatbelt / Linux bubblewrap) that blocks network access and hides the <code>~/.rlm</code>
+        credential store, so injected code can't exfiltrate your keys. Where no sandbox is available it
+        warns and runs unsandboxed — then only use content you trust, or run inside a container/VM.
       </p>
     </div>
   </section>

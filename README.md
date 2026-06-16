@@ -14,12 +14,17 @@ Instead of dumping a huge context into a single LLM call, RLM lets the model wri
 
 ## Security
 
-**rlm executes model-generated Python with NO sandbox.** The code the LLM writes runs directly on your machine as your user — full filesystem, network, and process access. A malicious or prompt-injected context document (a file, a fetched URL) can lead to arbitrary code execution, including reading `~/.rlm/credentials` and exfiltrating your API keys.
+rlm runs Python that the **LLM writes**, and a prompt-injected context document (a file or fetched URL) can steer that code — so the subprocess is treated as untrusted.
 
-Only run rlm against content you trust, or run it inside a container/VM.
+- **Sandboxed by default.** The Python subprocess runs inside an OS-level sandbox (macOS `sandbox-exec`/Seatbelt, Linux `bwrap`/bubblewrap) that **blocks all network** and **hides `~/.rlm`**, so injected code can't exfiltrate your API keys. All LLM calls are proxied through the parent process, so the child needs neither network nor credential access — nothing legitimate breaks. The sandbox is probe-tested before use.
+- **Graceful fallback.** Where no sandbox is available (Windows, or `bwrap` not installed), rlm prints a warning and runs unsandboxed — the code then has full access as your user, so only point it at content you trust or run inside a container/VM.
+- **Opt out** with `RLM_NO_SANDBOX=1` when model code legitimately needs network or local-file access and you trust the input.
+
+> The sandbox confines the primary exfiltration paths (network + credential reads). It does not yet fully confine arbitrary local file *writes* — treat untrusted context with care regardless.
 
 ## What's New in v0.5.0
 
+- **Sandboxed execution** — model-generated Python runs in an OS-level sandbox by default (no network, no access to `~/.rlm`), so prompt-injected code can't exfiltrate your keys — see [Security](#security)
 - **Ollama support** — use any locally-installed model (llama3, mistral, qwen, etc.) with zero API key setup
 - **Mixed-model mode** — `sub_model` in config lets you use a cheap/fast model for sub-queries and a powerful model for the root loop (mirrors the paper's GPT-5 + GPT-5-mini setup)
 - **Paper-aligned system prompt** — per-iteration budget awareness, sub-query strategy guidance, parallel async patterns from arXiv:2512.24601
@@ -194,7 +199,8 @@ src/
   interactive.ts   Interactive terminal REPL
   rlm.ts           Core RLM loop (Algorithm 1 from paper)
   repl.ts          Python REPL subprocess manager
-  runtime.py       Python runtime (FINAL, llm_query, async_llm_query)
+  sandbox.ts       OS-level sandbox for the Python subprocess (Seatbelt/bubblewrap)
+  runtime.py       Python runtime (FINAL, FINAL_VAR, llm_query, async_llm_query)
   cli.ts           Single-shot CLI mode
   viewer.ts        Trajectory viewer TUI
   colors.ts        Terminal color palette (Electric Amber RGB)
