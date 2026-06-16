@@ -11,6 +11,10 @@ import * as path from "node:path";
 import * as os from "node:os";
 import * as readline from "node:readline";
 import { fileURLToPath } from "node:url";
+import { planPythonSpawn } from "./sandbox.js";
+
+/** Emit the sandbox status once per process so it isn't repeated on restarts. */
+let sandboxNoticeShown = false;
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -89,7 +93,23 @@ export class PythonRepl {
 		const pythonCmd = process.platform === "win32" ? "python" : "python3";
 
 		const homeDir = os.homedir();
-		this.proc = spawn(pythonCmd, [runtimePath], {
+
+		// Run the model-generated Python under an OS sandbox (no network, no
+		// access to ~/.rlm) when one is available; fall back with a warning.
+		const plan = planPythonSpawn(pythonCmd, [runtimePath], homeDir);
+		if (!sandboxNoticeShown) {
+			sandboxNoticeShown = true;
+			if (plan.active) {
+				process.stderr.write(`[rlm] sandbox: ${plan.mechanism} (network blocked, ~/.rlm hidden)\n`);
+			} else {
+				process.stderr.write(
+					`[rlm] WARNING: running model-generated Python WITHOUT a sandbox (${plan.reason}). ` +
+						`It has full filesystem/network access as your user — only use trusted context.\n`,
+				);
+			}
+		}
+
+		this.proc = spawn(plan.command, plan.args, {
 			stdio: ["pipe", "pipe", "pipe"],
 			env: {
 				// Only pass what Python actually needs — not API keys or secrets
