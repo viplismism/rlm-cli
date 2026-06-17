@@ -1,10 +1,10 @@
 {
   "name": "rlm-cli",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Standalone CLI for Recursive Language Models (RLMs) — implements Algorithm 1 from arXiv:2512.24601",
   "type": "module",
   "bin": {
-    "rlm": "./bin/rlm.mjs"
+    "rlm": "bin/rlm.mjs"
   },
   "main": "dist/main.js",
   "files": [
@@ -38,7 +38,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/viplismism/rlm-cli.git"
+    "url": "git+https://github.com/viplismism/rlm-cli.git"
   },
   "homepage": "https://github.com/viplismism/rlm-cli",
   "bugs": "https://github.com/viplismism/rlm-cli/issues",

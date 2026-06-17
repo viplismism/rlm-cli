@@ -12,6 +12,16 @@ Instead of dumping a huge context into a single LLM call, RLM lets the model wri
   <img src="demo.png" alt="rlm-cli demo" width="750">
 </p>
 
+## Quickstart
+
+```bash
+npm install -g rlm-cli
+rlm                                          # interactive — first run sets up your provider + key
+rlm run --file big.log "which errors repeat most, and when?"
+```
+
+Works with Anthropic, OpenAI, Google, OpenRouter, or local **Ollama** models. The model-generated Python runs in an OS-level sandbox by default ([details](#security)).
+
 ## Security
 
 rlm runs Python that the **LLM writes**, and a prompt-injected context document (a file or fetched URL) can steer that code — so the subprocess is treated as untrusted.
