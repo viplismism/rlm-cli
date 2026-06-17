@@ -22,7 +22,7 @@ rlm runs Python that the **LLM writes**, and a prompt-injected context document 
 
 > The sandbox confines the primary exfiltration paths (network + credential reads). It does not yet fully confine arbitrary local file *writes* — treat untrusted context with care regardless.
 
-## What's New in v0.5.0
+## What's New in v0.6.0
 
 - **Sandboxed execution** — model-generated Python runs in an OS-level sandbox by default (no network, no access to `~/.rlm`), so prompt-injected code can't exfiltrate your keys — see [Security](#security)
 - **Ollama support** — use any locally-installed model (llama3, mistral, qwen, etc.) with zero API key setup
